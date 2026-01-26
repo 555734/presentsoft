@@ -14,6 +14,14 @@
 
     <div id="app-container">
         <div class="app-card">
+            <h2>ここ撮れわんわん</h2>
+            <p>
+                <a href="apps/cocotore/privacy.html">プライバシーポリシー</a> /
+                <a href="apps/cocotore/terms.html">利用規約</a>
+            </p>
+        </div>
+
+        <div class="app-card" style="opacity: 0.6;">
             <h2>サンプルアプリ</h2>
             <p><a href="apps/sample-app/privacy.html">プライバシーポリシー / 利用規約</a></p>
         </div>
@@ -26,6 +34,7 @@
             console.log("[Debug] PRESENTSOFT ポータルが初期化されました。");
             const apps = document.querySelectorAll('.app-card').length;
             console.log("[Debug] 現在の登録アプリ数: " + apps);
+            console.log("[Debug] 公開URL候補: " + window.location.origin + window.location.pathname);
         }
 
         // 実行
