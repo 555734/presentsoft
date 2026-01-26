@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PRESENTSOFT Apps</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <h1>PRESENTSOFT</h1>
+    <p>提供中のアプリケーション一覧と、関連ドキュメントです。</p>
+
+    <div id="app-container">
+        <div class="app-card">
+            <h2>サンプルアプリ</h2>
+            <p><a href="apps/sample-app/privacy.html">プライバシーポリシー / 利用規約</a></p>
+        </div>
+    </div>
+
+    <footer>&copy; 2026 PRESENTSOFT</footer>
+
+    <script>
+        function debugPortalInit() {
+            console.log("[Debug] PRESENTSOFT ポータルが初期化されました。");
+            const apps = document.querySelectorAll('.app-card').length;
+            console.log("[Debug] 現在の登録アプリ数: " + apps);
+        }
+
+        // 実行
+        debugPortalInit();
+    </script>
+</body>
+
+</html>

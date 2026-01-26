@@ -1,0 +1,6 @@
+body { font-family: sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; background: #f9f9f9; }
+h1 { border-bottom: 2px solid #007bff; padding-bottom: 10px; color: #007bff; }
+.app-card { background: white; border: 1px solid #ddd; padding: 15px; margin-bottom: 10px; border-radius: 8px; }
+a { color: #007bff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+footer { margin-top: 40px; font-size: 0.8em; color: #777; text-align: center; }
