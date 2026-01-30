@@ -12,7 +12,7 @@
     <p><a href="index.html">← PRESENTSOFT トップへ戻る</a></p>
 
     <h1>お問い合わせ</h1>
-    <p>アプリに関する不具合報告やご意見、プライバシーポリシーに関するお問い合わせは以下のフォームより送信してください。</p>
+    <p>以下のフォームに入力し、送信ボタンを押してください。お使いのメールアプリが起動します。</p>
 
     <div class="app-card">
         <form id="contact-form">
@@ -22,7 +22,7 @@
             </div>
 
             <div style="margin-bottom: 15px;">
-                <label for="email" style="display: block; font-weight: bold;">メールアドレス</label>
+                <label for="email" style="display: block; font-weight: bold;">返信先メールアドレス</label>
                 <input type="email" id="email" name="email" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
             </div>
 
@@ -48,27 +48,60 @@
 
     <script>
         (function () {
-            const form = document.getElementById('contact-form');
-            
-            console.log("[Debug] contact.html: お問い合わせフォームを初期化しました");
+            /**
+             * お問い合わせフォームの初期化を行います。
+             */
+            function initContactForm() {
+                console.log("[Debug] initContactForm: フォームの初期化を開始します。");
+                const form = document.getElementById('contact-form');
+                
+                if (form) {
+                    form.addEventListener('submit', handleFormSubmit);
+                    console.log("[Debug] initContactForm: 送信イベントリスナーを登録しました。");
+                } else {
+                    console.log("[Debug] initContactForm: エラー - フォームが見つかりませんでした。");
+                }
+            }
 
-            form.addEventListener('submit', function (event) {
-                event.preventDefault();
-                console.log("[Debug] フォーム送信イベント発生");
+            /**
+             * フォーム送信イベントを処理し、mailtoリンクを生成して実行します。
+             */
+            function handleFormSubmit(event) {
+                console.log("[Debug] handleFormSubmit: 送信ボタンがクリックされました。");
+                event.preventDefault(); // 通常の送信動作をキャンセル
 
+                // 入力データの取得
                 const formData = {
                     name: document.getElementById('name').value,
                     email: document.getElementById('email').value,
                     app: document.getElementById('app-select').value,
                     message: document.getElementById('message').value
                 };
+                console.log("[Debug] handleFormSubmit: 入力データを抽出しました:", formData);
 
-                console.log("[Debug] 送信データ取得:", formData);
+                // メールの設定
+                const targetEmail = "a3506124@gmail.com";
+                const subject = encodeURIComponent("【PRESENTSOFT お問い合わせ】" + formData.app);
+                const body = encodeURIComponent(
+                    "お名前: " + formData.name + "\n" +
+                    "返信先メール: " + formData.email + "\n" +
+                    "対象アプリ: " + formData.app + "\n\n" +
+                    "【お問い合わせ内容】\n" + formData.message
+                );
 
-                // 実際の運用ではここでAPIを叩く等の処理を行います
-                alert("お問い合わせありがとうございます。送信シミュレーションが完了しました。");
-                console.log("[Debug] 送信処理完了");
-            });
+                console.log("[Debug] handleFormSubmit: 送信先アドレス: " + targetEmail);
+                console.log("[Debug] handleFormSubmit: メールの件名と本文をエンコードしました。");
+
+                // mailtoリンクの構築と実行
+                const mailtoUrl = "mailto:" + targetEmail + "?subject=" + subject + "&body=" + body;
+                console.log("[Debug] handleFormSubmit: 生成されたURL: " + mailtoUrl);
+                
+                window.location.href = mailtoUrl;
+                console.log("[Debug] handleFormSubmit: window.location.href を更新し、メーラーを呼び出しました。");
+            }
+
+            // フォームの初期化を実行
+            initContactForm();
         })();
     </script>
 </body>
