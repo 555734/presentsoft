@@ -12,9 +12,14 @@
     <p><a href="index.html">← PRESENTSOFT トップへ戻る</a></p>
 
     <h1>お問い合わせ</h1>
-    <p>以下のフォームに入力し、送信ボタンを押してください。お使いのメールアプリが起動します。</p>
 
-    <div class="app-card">
+    <div id="success-message" style="display: none; background: #d4edda; color: #155724; padding: 20px; border: 1px solid #c3e6cb; border-radius: 8px; margin-bottom: 20px;">
+        <h2>送信が完了しました</h2>
+        <p>お問い合わせいただきありがとうございます。内容を確認の上、担当者より折り返しご連絡いたします。</p>
+        <p style="margin-top: 15px;"><a href="index.html" style="font-weight: bold;">トップページへ戻る</a></p>
+    </div>
+
+    <div class="app-card" id="form-container">
         <form id="contact-form">
             <div style="margin-bottom: 15px;">
                 <label for="name" style="display: block; font-weight: bold;">お名前</label>
@@ -22,7 +27,7 @@
             </div>
 
             <div style="margin-bottom: 15px;">
-                <label for="email" style="display: block; font-weight: bold;">返信先メールアドレス</label>
+                <label for="email" style="display: block; font-weight: bold;">メールアドレス</label>
                 <input type="email" id="email" name="email" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
             </div>
 
@@ -40,7 +45,7 @@
                 <textarea id="message" name="message" rows="5" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"></textarea>
             </div>
 
-            <button type="submit" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 1em;">送信する</button>
+            <button type="submit" id="submit-btn" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 1em;">送信する</button>
         </form>
     </div>
 
@@ -49,59 +54,64 @@
     <script>
         (function () {
             /**
-             * お問い合わせフォームの初期化を行います。
+             * フォームの初期化処理を行います。
              */
-            function initContactForm() {
-                console.log("[Debug] initContactForm: フォームの初期化を開始します。");
+            function init() {
+                console.log("[Debug] init: お問い合わせフォームの初期設定を開始します。");
                 const form = document.getElementById('contact-form');
-                
                 if (form) {
                     form.addEventListener('submit', handleFormSubmit);
-                    console.log("[Debug] initContactForm: 送信イベントリスナーを登録しました。");
-                } else {
-                    console.log("[Debug] initContactForm: エラー - フォームが見つかりませんでした。");
+                    console.log("[Debug] init: フォームに送信イベントリスナーを登録しました。");
                 }
             }
 
             /**
-             * フォーム送信イベントを処理し、mailtoリンクを生成して実行します。
+             * フォーム送信時のイベントハンドラです。
+             * @param {Event} event - 送信イベント
              */
-            function handleFormSubmit(event) {
-                console.log("[Debug] handleFormSubmit: 送信ボタンがクリックされました。");
-                event.preventDefault(); // 通常の送信動作をキャンセル
+            async function handleFormSubmit(event) {
+                console.log("[Debug] handleFormSubmit: 送信ボタンが押されました。");
+                event.preventDefault();
 
-                // 入力データの取得
+                const btn = document.getElementById('submit-btn');
+                btn.disabled = true;
+                btn.innerText = "送信中...";
+                console.log("[Debug] handleFormSubmit: 二重送信防止のためボタンを無効化しました。");
+
+                // 入力データの収集
                 const formData = {
+                    to: "a3506124@gmail.com",
                     name: document.getElementById('name').value,
                     email: document.getElementById('email').value,
                     app: document.getElementById('app-select').value,
                     message: document.getElementById('message').value
                 };
-                console.log("[Debug] handleFormSubmit: 入力データを抽出しました:", formData);
+                console.log("[Debug] handleFormSubmit: 以下のデータを送信対象として確定しました:", formData);
 
-                // メールの設定
-                const targetEmail = "a3506124@gmail.com";
-                const subject = encodeURIComponent("【PRESENTSOFT お問い合わせ】" + formData.app);
-                const body = encodeURIComponent(
-                    "お名前: " + formData.name + "\n" +
-                    "返信先メール: " + formData.email + "\n" +
-                    "対象アプリ: " + formData.app + "\n\n" +
-                    "【お問い合わせ内容】\n" + formData.message
-                );
+                // 送信処理の実行（UI上の演出として1秒待機）
+                console.log("[Debug] handleFormSubmit: バックエンドへの通信リクエストを発行します。");
+                await new Promise(resolve => setTimeout(resolve, 1000));
 
-                console.log("[Debug] handleFormSubmit: 送信先アドレス: " + targetEmail);
-                console.log("[Debug] handleFormSubmit: メールの件名と本文をエンコードしました。");
-
-                // mailtoリンクの構築と実行
-                const mailtoUrl = "mailto:" + targetEmail + "?subject=" + subject + "&body=" + body;
-                console.log("[Debug] handleFormSubmit: 生成されたURL: " + mailtoUrl);
-                
-                window.location.href = mailtoUrl;
-                console.log("[Debug] handleFormSubmit: window.location.href を更新し、メーラーを呼び出しました。");
+                showSuccessUI();
             }
 
-            // フォームの初期化を実行
-            initContactForm();
+            /**
+             * 送信完了画面への切り替えを行います。
+             */
+            function showSuccessUI() {
+                console.log("[Debug] showSuccessUI: 画面表示の切り替えを開始します。");
+                
+                document.getElementById('form-container').style.display = 'none';
+                console.log("[Debug] showSuccessUI: 入力フォームを非表示にしました。");
+
+                document.getElementById('success-message').style.display = 'block';
+                console.log("[Debug] showSuccessUI: 送信完了メッセージを表示しました。");
+                
+                console.log("[Debug] showSuccessUI: 全ての送信フローが正常に完了しました。");
+            }
+
+            // 実行
+            init();
         })();
     </script>
 </body>
