@@ -1,0 +1,24 @@
+name: Temporary Commons video CDN test
+
+on:
+  push:
+    branches: [tmp-controller-video-assets]
+    paths:
+      - '.github/workflows/tmp-controller-video-download-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and convert one Commons transcode
+        run: |
+          set -eux
+          URL='https://upload.wikimedia.org/wikipedia/commons/transcoded/a/ab/4Fourths_game_trailer_HD.webm/4Fourths_game_trailer_HD.webm.240p.vp9.webm'
+          curl -L --fail --retry 4 --retry-delay 2 -A 'ControllerHistoryDiagnostic/1.0' "$URL" -o source.webm
+          ls -lh source.webm
+          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 source.webm
+          ffmpeg -hide_banner -loglevel error -y -i source.webm -t 4 -vf 'scale=512:-2:force_original_aspect_ratio=decrease,pad=512:288:(ow-iw)/2:(oh-ih)/2' -an -c:v libx264 -preset veryfast -crf 30 clip.mp4
+          ls -lh clip.mp4
