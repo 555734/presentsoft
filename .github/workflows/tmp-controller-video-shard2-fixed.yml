@@ -1,0 +1,51 @@
+name: Temporary fixed controller video shard 2
+
+on:
+  push:
+    branches: [tmp-controller-video-assets]
+    paths:
+      - 'tmp-controller-video-assets/download_video_shard2_fixed.py'
+      - '.github/workflows/tmp-controller-video-shard2-fixed.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  shard2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      SHARD: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Build fixed shard 2
+        run: python3 tmp-controller-video-assets/download_video_shard2_fixed.py
+      - name: Show summary
+        if: always()
+        run: |
+          cat summary_shard_2.json || true
+          find video_shard_2 -type f | wc -l || true
+          du -sh video_shard_2 || true
+      - name: Upload clips
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-fixed-shard-2
+          path: video_shard_2
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 2
+      - name: Upload metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-fixed-shard-2-metadata
+          path: |
+            manifest_shard_2.csv
+            summary_shard_2.json
+          if-no-files-found: warn
+          retention-days: 2
