@@ -1,0 +1,43 @@
+name: Temporary Commons video diagnostics
+
+on:
+  push:
+    branches: [tmp-controller-video-assets]
+    paths:
+      - '.github/workflows/tmp-controller-video-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query Commons video API
+        run: |
+          python3 - <<'PY'
+          import json, urllib.parse, urllib.request
+          API='https://commons.wikimedia.org/w/api.php'
+          H={'User-Agent':'ControllerHistoryDiagnostic/1.0'}
+          def get(p):
+              p.update({'format':'json','formatversion':'2'})
+              u=API+'?'+urllib.parse.urlencode(p)
+              with urllib.request.urlopen(urllib.request.Request(u,headers=H),timeout=30) as r:return json.load(r)
+          cats=['Video game trailers','Videos by Xbox México','Videos of gamepads','Videos of video game gameplay']
+          titles=[]
+          for c in cats:
+              d=get({'action':'query','list':'categorymembers','cmtitle':'Category:'+c,'cmtype':'file','cmlimit':'50'})
+              fs=[x['title'] for x in d.get('query',{}).get('categorymembers',[]) if x['title'].lower().endswith(('.webm','.ogv','.ogg','.mp4'))]
+              print('CAT',c,'video_first50',len(fs)); titles += fs[:5]
+          if titles:
+              p={'action':'query','prop':'videoinfo','titles':'|'.join(titles[:15]),'viprop':'url|size|mime|dimensions|derivatives'}
+              data=urllib.parse.urlencode({**p,'format':'json','formatversion':'2'}).encode()
+              req=urllib.request.Request(API,data=data,headers=H)
+              with urllib.request.urlopen(req,timeout=30) as r:d=json.load(r)
+              pages=d.get('query',{}).get('pages',[])
+              print('VIDEOINFO_PAGES',len(pages))
+              for x in pages[:3]:
+                  vi=(x.get('videoinfo') or [{}])[0]
+                  print('TITLE',x.get('title'),'MIME',vi.get('mime'),'DERIVATIVES',len(vi.get('derivatives') or []))
+                  for der in (vi.get('derivatives') or [])[:5]: print('DER',der.get('transcodekey'),der.get('src') or der.get('url'))
+          PY
