@@ -1,0 +1,77 @@
+name: Temporary controller video asset build
+
+on:
+  push:
+    branches: [tmp-controller-video-assets]
+    paths:
+      - 'tmp-controller-video-assets/download_controller_video_clips.py'
+      - '.github/workflows/tmp-controller-video-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build 1000 B-roll clips
+        run: |
+          ffmpeg -version | head -n 1
+          python3 tmp-controller-video-assets/download_controller_video_clips.py
+      - name: Summary
+        if: always()
+        run: |
+          cat video_summary.json || true
+          du -sh video_assets || true
+          find video_assets -type f | wc -l || true
+      - name: Upload part 1
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-clips-part01
+          path: video_assets/part01
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 2
+      - name: Upload part 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-clips-part02
+          path: video_assets/part02
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 2
+      - name: Upload part 3
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-clips-part03
+          path: video_assets/part03
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 2
+      - name: Upload part 4
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-clips-part04
+          path: video_assets/part04
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 2
+      - name: Upload metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-clips-metadata
+          path: |
+            video_manifest.csv
+            video_manifest.json
+            video_summary.json
+            README_VIDEO_ASSETS.txt
+          if-no-files-found: warn
+          retention-days: 2
