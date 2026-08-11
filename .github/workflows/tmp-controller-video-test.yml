@@ -1,0 +1,16 @@
+name: Temporary controller video runner test
+
+on:
+  push:
+    branches: [tmp-controller-video-assets]
+    paths:
+      - '.github/workflows/tmp-controller-video-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo public-actions-ok
