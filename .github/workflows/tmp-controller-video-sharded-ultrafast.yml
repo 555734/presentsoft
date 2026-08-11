@@ -1,0 +1,55 @@
+name: Temporary ultra-fast controller video asset build
+
+on:
+  push:
+    branches: [tmp-controller-video-assets]
+    paths:
+      - 'tmp-controller-video-assets/download_video_shard_ultrafast.py'
+      - '.github/workflows/tmp-controller-video-sharded-ultrafast.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  shard:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Build ultra-fast shard
+        run: python3 tmp-controller-video-assets/download_video_shard_ultrafast.py
+      - name: Show shard summary
+        if: always()
+        run: |
+          cat summary_shard_${SHARD}.json || true
+          find video_shard_${SHARD} -type f | wc -l || true
+          du -sh video_shard_${SHARD} || true
+      - name: Upload shard clips
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-ultrafast-shard-${{ matrix.shard }}
+          path: video_shard_${{ matrix.shard }}
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 2
+      - name: Upload shard metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-video-ultrafast-shard-${{ matrix.shard }}-metadata
+          path: |
+            manifest_shard_${{ matrix.shard }}.csv
+            summary_shard_${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 2
