@@ -1,0 +1,40 @@
+name: Temporary MeloTTS raw sample
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-melotts-raw-only.yml'
+permissions:
+  contents: write
+jobs:
+  melo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" > melotts_raw_run_marker.txt
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add melotts_raw_run_marker.txt && git commit -m 'MeloTTS raw run marker [skip ci]' && git push
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.10'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libsndfile1
+          python -m pip install -q 'numpy<2' git+https://github.com/myshell-ai/MeloTTS.git
+          python -m unidic download
+      - run: |
+          mkdir -p samples
+          python - <<'PY'
+          from melo.api import TTS
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          m=TTS(language='JP',device='cpu')
+          m.tts_to_file(text,m.hps.data.spk2id['JP'],'samples/03_melotts_jp_raw.wav',speed=1.02,quiet=True)
+          PY
+      - id: up
+        uses: actions/upload-artifact@v4
+        with:
+          name: melotts-raw-sample
+          path: samples/*.wav
+          retention-days: 2
+      - run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.up.outputs.artifact-id }}' > melotts_raw_artifact_marker.txt
+          git pull --rebase; git add melotts_raw_artifact_marker.txt; git commit -m 'MeloTTS raw artifact marker [skip ci]' || true; git push
