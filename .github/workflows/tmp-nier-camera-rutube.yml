@@ -1,0 +1,36 @@
+name: Temporary Nier camera reaction probe
+on:
+  push:
+    paths: ['.github/workflows/tmp-nier-camera-rutube.yml']
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python -m pip install -U yt-dlp
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg zip
+      - name: Download and sheet
+        run: |
+          mkdir -p nier_probe
+          yt-dlp 'https://rutube.ru/video/d93c7af77b114328d9bf0bda7fb3ef19/' -f 'bv*[height<=480]+ba/b[height<=480]' --merge-output-format mp4 -o 'nier_probe/source.%(ext)s'
+          f=$(find nier_probe -maxdepth 1 -name 'source.*' | head -1)
+          ffmpeg -y -hide_banner -loglevel error -i "$f" -vf 'fps=1,scale=320:-1,tile=5x5' -frames:v 4 nier_probe/sheet_%02d.jpg
+          ffmpeg -y -hide_banner -loglevel error -i "$f" -c:v libx264 -crf 24 -preset veryfast -c:a aac -b:a 96k nier_probe/source_480.mp4
+          rm -f "$f"
+          zip -r nier_camera_probe.zip nier_probe
+      - name: Upload
+        id: up
+        uses: actions/upload-artifact@v4
+        with:
+          name: nier-camera-probe
+          path: nier_camera_probe.zip
+          retention-days: 2
+      - name: marker
+        run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.up.outputs.artifact-id }}' > nier_camera_probe_marker.txt
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add nier_camera_probe_marker.txt && git commit -m 'Temporary Nier camera marker [skip ci]' && git push
