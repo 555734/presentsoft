@@ -1,0 +1,102 @@
+name: Temporary alternative TTS damigoe samples
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-alt-tts-damigoe.yml'
+permissions:
+  contents: write
+jobs:
+  synthesize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish run id
+        run: |
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" > alt_tts_run_marker.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add alt_tts_run_marker.txt
+          git commit -m 'Alt TTS run marker [skip ci]'
+          git push
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install audio tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg espeak-ng libsndfile1
+          python -m pip install -q --upgrade pip
+      - name: Generate Kokoro Japanese voices
+        run: |
+          python -m pip install -q 'kokoro>=0.9.4' 'misaki[ja]' soundfile numpy
+          mkdir -p samples
+          python - <<'PY'
+          import numpy as np, soundfile as sf
+          from kokoro import KPipeline
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          pipe=KPipeline(lang_code='j')
+          for voice,out in [('jm_kumo','samples/01_kokoro_kumo_raw.wav'),('jf_alpha','samples/02_kokoro_alpha_raw.wav')]:
+              chunks=[]
+              for _,_,audio in pipe(text, voice=voice, speed=1.0):
+                  chunks.append(np.asarray(audio,dtype=np.float32))
+              x=np.concatenate(chunks) if chunks else np.zeros(24000,dtype=np.float32)
+              sf.write(out,x,24000)
+          PY
+      - name: Process Kokoro damigoe variants
+        run: |
+          for f in samples/*_raw.wav; do
+            b=${f%_raw.wav}
+            ffmpeg -y -hide_banner -loglevel error -i "$f" -filter_complex "[0:a]asplit=2[clean][rough];[rough]highpass=f=160,lowpass=f=3600,acompressor=threshold=-20dB:ratio=4:attack=5:release=60,volume=1.7,tanh[dist];[clean][dist]amix=inputs=2:weights='1 0.28':normalize=0,equalizer=f=220:t=q:w=1.0:g=2.5,equalizer=f=1100:t=q:w=1.2:g=3.0,equalizer=f=5200:t=q:w=1.0:g=-2.5,acompressor=threshold=-17dB:ratio=2.4:attack=8:release=90,loudnorm=I=-16:LRA=7:TP=-1.5" -c:a pcm_s16le "${b}_damigoe.wav"
+          done
+          mkdir -p kokoro_out
+          for f in samples/*.wav; do b=$(basename "$f" .wav); ffmpeg -y -hide_banner -loglevel error -i "$f" -c:a aac -b:a 192k "kokoro_out/${b}.m4a"; done
+          cat > kokoro_out/README.txt <<'EOF'
+          01 Kokoro jm_kumo raw / damigoe
+          02 Kokoro jf_alpha raw / damigoe
+          Kokoro-82M: Apache-2.0 model; Japanese voices.
+          EOF
+      - name: Upload Kokoro
+        uses: actions/upload-artifact@v4
+        with:
+          name: alt-tts-kokoro
+          path: kokoro_out
+          retention-days: 2
+      - name: Generate MeloTTS Japanese
+        continue-on-error: true
+        run: |
+          python -m pip install -q 'numpy<2' git+https://github.com/myshell-ai/MeloTTS.git
+          python -m unidic download
+          python - <<'PY'
+          from melo.api import TTS
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          model=TTS(language='JP',device='cpu')
+          ids=model.hps.data.spk2id
+          model.tts_to_file(text,ids['JP'],'samples/03_melotts_jp_raw.wav',speed=1.02,quiet=True)
+          PY
+      - name: Process and upload MeloTTS if available
+        if: always()
+        run: |
+          mkdir -p melo_out
+          if [ -s samples/03_melotts_jp_raw.wav ]; then
+            ffmpeg -y -hide_banner -loglevel error -i samples/03_melotts_jp_raw.wav -filter_complex "[0:a]asplit=2[clean][rough];[rough]highpass=f=150,lowpass=f=3500,acompressor=threshold=-20dB:ratio=4:attack=5:release=60,volume=1.8,tanh[dist];[clean][dist]amix=inputs=2:weights='1 0.30':normalize=0,equalizer=f=230:t=q:w=1:g=2,equalizer=f=1050:t=q:w=1.2:g=3.5,equalizer=f=5000:t=q:w=1:g=-2,acompressor=threshold=-17dB:ratio=2.5:attack=8:release=90,loudnorm=I=-16:LRA=7:TP=-1.5" -c:a pcm_s16le samples/03_melotts_jp_damigoe.wav
+            for f in samples/03_melotts*.wav; do b=$(basename "$f" .wav); ffmpeg -y -hide_banner -loglevel error -i "$f" -c:a aac -b:a 192k "melo_out/${b}.m4a"; done
+          else
+            echo 'MeloTTS generation failed; no audio generated.' > melo_out/FAILED.txt
+          fi
+      - name: Upload MeloTTS
+        if: always()
+        id: up
+        uses: actions/upload-artifact@v4
+        with:
+          name: alt-tts-melotts
+          path: melo_out
+          retention-days: 2
+      - name: Publish artifact marker
+        if: always()
+        run: |
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" > alt_tts_artifact_marker.txt
+          git pull --rebase
+          git add alt_tts_artifact_marker.txt
+          git commit -m 'Alt TTS artifact marker [skip ci]' || true
+          git push
