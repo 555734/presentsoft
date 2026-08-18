@@ -1,0 +1,48 @@
+name: Temporary Sadako video probe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-sadako-video-probe.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install tools
+        run: |
+          python -m pip install -U yt-dlp
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Download official trailers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          yt-dlp 'ytsearch1:【予告篇】『リング』 角川シネマコレクション' \
+            --match-filter "duration < 180" \
+            -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
+            -o 'out/ring1998_official.%(ext)s'
+          yt-dlp 'https://www.youtube.com/watch?v=mVtcKz7afuM' \
+            -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
+            -o 'out/sadako2019_official.%(ext)s'
+          ls -lh out
+
+      - name: Create contact sheets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for f in out/*.mp4; do
+            base=$(basename "$f" .mp4)
+            mkdir -p "out/${base}_frames"
+            ffmpeg -hide_banner -loglevel error -i "$f" -vf "fps=1,scale=320:-1" "out/${base}_frames/%03d.jpg"
+            ffmpeg -hide_banner -loglevel error -framerate 1 -i "out/${base}_frames/%03d.jpg" -vf "tile=5x5" -frames:v 4 "out/${base}_sheet_%02d.jpg" || true
+          done
+
+      - name: Upload probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: sadako-video-probe
+          path: out
+          retention-days: 2
