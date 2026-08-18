@@ -14,45 +14,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install ffmpeg
         run: |
-          python -m pip install -U yt-dlp
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
 
-      - name: Download trailer candidates
-        shell: bash
-        run: |
-          set -uxo pipefail
-          mkdir -p out
-          yt-dlp 'https://www.dailymotion.com/video/x7w0umt' \
-            -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
-            -o 'out/ringu1998_dailymotion.%(ext)s' || true
-          yt-dlp 'https://www.videomarket.jp/title/204653/A204653002999H01/playable' \
-            -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
-            -o 'out/sadako2019_videomarket.%(ext)s' || true
-          yt-dlp 'https://www.youtube.com/watch?v=0_f3vfflnOE' \
-            -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
-            -o 'out/ringu1998_youtube.%(ext)s' || true
-          ls -lh out || true
-          test -n "$(find out -maxdepth 1 -name '*.mp4' -print -quit)"
-
-      - name: Create contact sheets
+      - name: Download TV-emergence scene
         shell: bash
         run: |
           set -euxo pipefail
-          for f in out/*.mp4; do
-            base=$(basename "$f" .mp4)
-            mkdir -p "out/${base}_frames"
-            ffmpeg -hide_banner -loglevel error -i "$f" -vf "fps=1,scale=320:-1" "out/${base}_frames/%03d.jpg"
-            ffmpeg -hide_banner -loglevel error -framerate 1 -i "out/${base}_frames/%03d.jpg" -vf "tile=5x5" -frames:v 5 "out/${base}_sheet_%02d.jpg" || true
-          done
+          mkdir -p out
+          curl -fL --retry 3 --retry-delay 2 \
+            -A 'Mozilla/5.0' \
+            'https://idolfeatures.com/wp-content/uploads/2012/10/Ringu-Pure-Coming-Out-of-TV-Scene.mp4' \
+            -o out/ringu_tv_emergence_source.mp4
+          ffprobe -v error -show_entries format=duration,size -of default=nw=1 out/ringu_tv_emergence_source.mp4 | tee out/PROBE.txt
+
+      - name: Create half-second frames and contact sheets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p out/frames
+          ffmpeg -hide_banner -loglevel error -i out/ringu_tv_emergence_source.mp4 \
+            -vf "fps=2,scale=320:-1" out/frames/%03d.jpg
+          ffmpeg -hide_banner -loglevel error -framerate 1 -i out/frames/%03d.jpg \
+            -vf "tile=5x5" -frames:v 8 out/sheet_%02d.jpg || true
 
       - name: Upload probe
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: sadako-video-probe
+          name: sadako-tv-emergence-probe
           path: out
           retention-days: 2
 
@@ -63,5 +55,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add sadako_probe_marker.txt
-          git commit -m 'Temporary Sadako probe marker [skip ci]' || true
+          git commit -m 'Temporary Sadako TV probe marker [skip ci]' || true
           git push
