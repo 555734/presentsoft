@@ -1,0 +1,114 @@
+name: Temporary AquesTalk Reimu Marisa samples
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-aquestalk-reimu-marisa-samples.yml'
+permissions:
+  contents: write
+jobs:
+  synthesize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish run id
+        run: |
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" > aquestalk_sample_run_marker.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add aquestalk_sample_run_marker.txt
+          git commit -m 'AquesTalk sample run marker [skip ci]'
+          git push
+      - name: Install Wine and helpers
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wine64 wine32 xvfb unzip ffmpeg fonts-noto-cjk
+      - name: Download official AquesTalkPlayer
+        run: |
+          curl -fL --retry 3 -A 'Mozilla/5.0' 'https://www.a-quest.com/archive/package/aquestalkplayer_20250606.zip' -o aquestalkplayer.zip
+          unzip -q aquestalkplayer.zip -d aq
+          find aq -maxdepth 3 -type f -printf '%p\n' | sort > aq_files.txt
+          exe=$(find aq -iname 'AquesTalkPlayer.exe' | head -1)
+          test -n "$exe"
+          echo "EXE=$exe" >> "$GITHUB_ENV"
+          preset=$(find aq -iname '*preset*' | head -1 || true)
+          if [ -n "$preset" ]; then
+            echo "--- preset file ---"
+            iconv -f CP932 -t UTF-8 "$preset" 2>/dev/null || cat "$preset" || true
+          fi
+      - name: Initialize Wine
+        env:
+          WINEDEBUG: '-all'
+          LANG: ja_JP.UTF-8
+        run: |
+          xvfb-run -a wineboot -u
+      - name: Generate samples
+        env:
+          WINEDEBUG: '-all'
+          LANG: ja_JP.UTF-8
+        run: |
+          mkdir -p samples
+          python - <<'PY'
+          from pathlib import Path
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          Path('sample.txt').write_bytes(text.encode('cp932'))
+          PY
+          abs_txt=$(pwd)/sample.txt
+          win_txt=$(winepath -w "$abs_txt")
+          for preset in 'れいむ' 'まりさ'; do
+            out="samples/${preset}.wav"
+            win_out=$(winepath -w "$(pwd)/$out")
+            echo "Trying preset: $preset"
+            set +e
+            xvfb-run -a wine "$EXE" /F "$win_txt" /P "$preset" /W "$win_out"
+            rc=$?
+            set -e
+            echo "rc=$rc"
+            ls -lh samples || true
+          done
+          # Also try common title-case variants if needed
+          if [ ! -s samples/れいむ.wav ]; then
+            for preset in '霊夢' 'reimu'; do
+              win_out=$(winepath -w "$(pwd)/samples/reimu_alt.wav")
+              set +e; xvfb-run -a wine "$EXE" /F "$win_txt" /P "$preset" /W "$win_out"; set -e
+              [ -s samples/reimu_alt.wav ] && break
+            done
+          fi
+          if [ ! -s samples/まりさ.wav ]; then
+            for preset in '魔理沙' 'marisa'; do
+              win_out=$(winepath -w "$(pwd)/samples/marisa_alt.wav")
+              set +e; xvfb-run -a wine "$EXE" /F "$win_txt" /P "$preset" /W "$win_out"; set -e
+              [ -s samples/marisa_alt.wav ] && break
+            done
+          fi
+          find samples -type f -size +1k -printf '%f %k KB\n'
+      - name: Normalize and package
+        run: |
+          mkdir -p final
+          for f in samples/*.wav; do
+            [ -s "$f" ] || continue
+            b=$(basename "$f" .wav)
+            ffmpeg -y -hide_banner -loglevel error -i "$f" -af 'loudnorm=I=-16:LRA=7:TP=-1.5' -c:a aac -b:a 192k "final/${b}.m4a"
+          done
+          cat > final/README.txt <<'EOF'
+          AquesTalkPlayer official voice comparison samples.
+          For private evaluation only. Do not publish or monetize these samples without the appropriate AQUEST commercial-content license.
+          Source app: official AquesTalkPlayer 1.1.1.1 (2025-06-06).
+          EOF
+          zip -r aquestalk_reimu_marisa_samples.zip final
+          ls -lh final aquestalk_reimu_marisa_samples.zip
+      - name: Upload
+        id: up
+        uses: actions/upload-artifact@v4
+        with:
+          name: aquestalk-reimu-marisa-samples
+          path: aquestalk_reimu_marisa_samples.zip
+          retention-days: 2
+      - name: Publish artifact id
+        run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.up.outputs.artifact-id }}' > aquestalk_sample_artifact_marker.txt
+          git pull --rebase
+          git add aquestalk_sample_artifact_marker.txt
+          git commit -m 'AquesTalk sample artifact marker [skip ci]' || true
+          git push
