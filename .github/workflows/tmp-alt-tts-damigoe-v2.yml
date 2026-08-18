@@ -1,0 +1,96 @@
+name: Temporary alternative TTS damigoe samples v2
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-alt-tts-damigoe-v2.yml'
+permissions:
+  contents: write
+jobs:
+  synthesize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish run id
+        run: |
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" > alt_tts_v2_run_marker.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add alt_tts_v2_run_marker.txt
+          git commit -m 'Alt TTS v2 run marker [skip ci]'
+          git push
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install audio tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg espeak-ng libsndfile1
+          python -m pip install -q --upgrade pip
+          mkdir -p out samples
+      - name: Generate Kokoro Japanese voices
+        continue-on-error: true
+        run: |
+          python -m pip install -q 'kokoro>=0.9.4' 'misaki[ja]' soundfile numpy
+          python -m unidic download
+          python - <<'PY'
+          import numpy as np, soundfile as sf
+          from kokoro import KPipeline
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          pipe=KPipeline(lang_code='j')
+          for voice,out in [('jm_kumo','samples/01_kokoro_kumo_raw.wav'),('jf_alpha','samples/02_kokoro_alpha_raw.wav')]:
+              chunks=[]
+              for _,_,audio in pipe(text, voice=voice, speed=1.0): chunks.append(np.asarray(audio,dtype=np.float32))
+              sf.write(out,np.concatenate(chunks),24000)
+          PY
+      - name: Generate MeloTTS Japanese
+        if: always()
+        continue-on-error: true
+        run: |
+          python -m pip install -q 'numpy<2' git+https://github.com/myshell-ai/MeloTTS.git
+          python -m unidic download
+          python - <<'PY'
+          from melo.api import TTS
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          model=TTS(language='JP',device='cpu')
+          ids=model.hps.data.spk2id
+          print(ids)
+          model.tts_to_file(text,ids['JP'],'samples/03_melotts_jp_raw.wav',speed=1.02,quiet=True)
+          PY
+      - name: Make damigoe and package
+        if: always()
+        run: |
+          for f in samples/*_raw.wav; do
+            [ -s "$f" ] || continue
+            b=${f%_raw.wav}
+            ffmpeg -y -hide_banner -loglevel error -i "$f" -filter_complex "[0:a]asplit=2[clean][rough];[rough]highpass=f=155,lowpass=f=3550,acompressor=threshold=-20dB:ratio=4:attack=5:release=60,volume=1.75,tanh[dist];[clean][dist]amix=inputs=2:weights='1 0.30':normalize=0,equalizer=f=225:t=q:w=1:g=2.5,equalizer=f=1080:t=q:w=1.1:g=3.2,equalizer=f=5100:t=q:w=1:g=-2.5,acompressor=threshold=-17dB:ratio=2.4:attack=8:release=90,loudnorm=I=-16:LRA=7:TP=-1.5" -c:a pcm_s16le "${b}_damigoe.wav"
+          done
+          for f in samples/*.wav; do
+            [ -s "$f" ] || continue
+            b=$(basename "$f" .wav)
+            ffmpeg -y -hide_banner -loglevel error -i "$f" -c:a aac -b:a 192k "out/${b}.m4a"
+          done
+          cat > out/README.txt <<'EOF'
+          Alternative base TTS comparison
+          01 Kokoro jm_kumo: Japanese male voice
+          02 Kokoro jf_alpha: Japanese female voice
+          03 MeloTTS JP: Japanese base voice
+          *_raw = unprocessed base voice
+          *_damigoe = same medium rough/damaged-voice processing
+          EOF
+      - name: Upload
+        id: up
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alt-tts-damigoe-v2
+          path: out
+          retention-days: 2
+      - name: Publish artifact marker
+        if: always()
+        run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.up.outputs.artifact-id }}' > alt_tts_v2_artifact_marker.txt
+          git pull --rebase
+          git add alt_tts_v2_artifact_marker.txt
+          git commit -m 'Alt TTS v2 artifact marker [skip ci]' || true
+          git push
