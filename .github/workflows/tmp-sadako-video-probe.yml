@@ -20,19 +20,22 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
 
-      - name: Download official trailers
+      - name: Download trailer candidates
         shell: bash
         run: |
-          set -euxo pipefail
+          set -uxo pipefail
           mkdir -p out
-          yt-dlp 'ytsearch1:【予告篇】『リング』 角川シネマコレクション' \
-            --match-filter "duration < 180" \
+          yt-dlp 'https://www.dailymotion.com/video/x7w0umt' \
             -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
-            -o 'out/ring1998_official.%(ext)s'
-          yt-dlp 'https://www.youtube.com/watch?v=mVtcKz7afuM' \
+            -o 'out/ringu1998_dailymotion.%(ext)s' || true
+          yt-dlp 'https://www.videomarket.jp/title/204653/A204653002999H01/playable' \
             -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
-            -o 'out/sadako2019_official.%(ext)s'
-          ls -lh out
+            -o 'out/sadako2019_videomarket.%(ext)s' || true
+          yt-dlp 'https://www.youtube.com/watch?v=0_f3vfflnOE' \
+            -f 'bv*[height<=720]+ba/b[height<=720]' --merge-output-format mp4 \
+            -o 'out/ringu1998_youtube.%(ext)s' || true
+          ls -lh out || true
+          test -n "$(find out -maxdepth 1 -name '*.mp4' -print -quit)"
 
       - name: Create contact sheets
         shell: bash
@@ -42,7 +45,7 @@ jobs:
             base=$(basename "$f" .mp4)
             mkdir -p "out/${base}_frames"
             ffmpeg -hide_banner -loglevel error -i "$f" -vf "fps=1,scale=320:-1" "out/${base}_frames/%03d.jpg"
-            ffmpeg -hide_banner -loglevel error -framerate 1 -i "out/${base}_frames/%03d.jpg" -vf "tile=5x5" -frames:v 4 "out/${base}_sheet_%02d.jpg" || true
+            ffmpeg -hide_banner -loglevel error -framerate 1 -i "out/${base}_frames/%03d.jpg" -vf "tile=5x5" -frames:v 5 "out/${base}_sheet_%02d.jpg" || true
           done
 
       - name: Upload probe
