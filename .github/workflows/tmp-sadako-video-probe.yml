@@ -5,10 +5,15 @@ on:
     paths:
       - '.github/workflows/tmp-sadako-video-probe.yml'
 
+permissions:
+  contents: write
+
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install tools
         run: |
           python -m pip install -U yt-dlp
@@ -41,8 +46,19 @@ jobs:
           done
 
       - name: Upload probe
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: sadako-video-probe
           path: out
           retention-days: 2
+
+      - name: Publish temporary run marker
+        shell: bash
+        run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.upload.outputs.artifact-id }}' > sadako_probe_marker.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add sadako_probe_marker.txt
+          git commit -m 'Temporary Sadako probe marker [skip ci]' || true
+          git push
