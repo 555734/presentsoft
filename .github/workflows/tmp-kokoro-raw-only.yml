@@ -1,0 +1,43 @@
+name: Temporary Kokoro raw samples
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-kokoro-raw-only.yml'
+permissions:
+  contents: write
+jobs:
+  kokoro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" > kokoro_raw_run_marker.txt
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add kokoro_raw_run_marker.txt && git commit -m 'Kokoro raw run marker [skip ci]' && git push
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.10'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng libsndfile1
+          python -m pip install -q 'numpy<2' soundfile 'kokoro>=0.9.4' 'misaki[ja]'
+          python -m unidic download
+      - run: |
+          mkdir -p samples
+          python - <<'PY'
+          import numpy as np, soundfile as sf
+          from kokoro import KPipeline
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          p=KPipeline(lang_code='j')
+          for v,o in [('jm_kumo','samples/01_kokoro_kumo_raw.wav'),('jf_alpha','samples/02_kokoro_alpha_raw.wav')]:
+            c=[np.asarray(a,dtype=np.float32) for _,_,a in p(text,voice=v,speed=1.0)]
+            sf.write(o,np.concatenate(c),24000)
+          PY
+      - id: up
+        uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-raw-samples
+          path: samples/*.wav
+          retention-days: 2
+      - run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.up.outputs.artifact-id }}' > kokoro_raw_artifact_marker.txt
+          git pull --rebase; git add kokoro_raw_artifact_marker.txt; git commit -m 'Kokoro raw artifact marker [skip ci]' || true; git push
