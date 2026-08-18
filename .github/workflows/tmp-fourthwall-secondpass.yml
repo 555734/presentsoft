@@ -1,0 +1,104 @@
+name: Temporary fourth wall second-pass assets
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-fourthwall-secondpass.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg zip
+
+      - name: Download targeted assets
+        shell: bash
+        run: |
+          set -u
+          ROOT='secondpass'
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"/{03_light_meta,02_mgs,04_resetti,07_nier_camera,09_mother2,10_totono_nier_end}
+          dl(){ url="$1"; out="$2"; echo "GET $out"; curl -fL --retry 3 --connect-timeout 15 -A 'Mozilla/5.0 Chrome/124 Safari/537.36' "$url" -o "$out" || true; }
+
+          # light meta
+          dl 'https://blog-imgs-29.fc2.com/a/r/a/araragi1028/P1000554.jpg' "$ROOT/03_light_meta/gintama_production_cost_meta.jpg"
+          dl 'https://assets.st-note.com/img/1711091166943-2D49APAj7x.jpg' "$ROOT/03_light_meta/kid_icarus_dialogue.jpg"
+
+          # MGS exact + memory-card visual
+          dl 'https://pinion.jp/webp.php/2025/02/%E3%83%A1%E3%82%BF%E3%83%AB%E3%82%AE%E3%82%A2%E3%82%BD%E3%83%AA%E3%83%83%E3%83%89_%E3%82%B5%E3%82%A4%E3%82%B3%E3%83%9E%E3%83%B3%E3%83%86%E3%82%A3%E3%82%B9-1024x535.jpg' "$ROOT/02_mgs/psycho_mantis_tokimemo_quote.jpg"
+          dl 'https://i.kym-cdn.com/photos/images/original/001/335/711/aa6.jpg' "$ROOT/02_mgs/psycho_mantis_memory_card.jpg"
+
+          # Resetti old scolding screenshots
+          dl 'https://fantasystudy.com/wp-content/uploads/2020/12/EpmP12NU0AAMa7Q-300x180.jpg' "$ROOT/04_resetti/resetti_scolding_01.jpg"
+          dl 'https://fantasystudy.com/wp-content/uploads/2020/12/EpmP8M-UUAAsty6-300x180.jpg' "$ROOT/04_resetti/resetti_scolding_02.jpg"
+          dl 'https://fantasystudy.com/wp-content/uploads/2020/12/EpmQ4XEVQAMXkF2-300x180.jpg' "$ROOT/04_resetti/resetti_scolding_03.jpg"
+
+          # 2B camera reaction GIF -> MP4
+          dl 'https://i.imgur.com/6YCACtE.gif' "$ROOT/07_nier_camera/2b_camera_swat.gif"
+          if [ -s "$ROOT/07_nier_camera/2b_camera_swat.gif" ]; then
+            ffmpeg -y -hide_banner -loglevel error -i "$ROOT/07_nier_camera/2b_camera_swat.gif" -movflags faststart -pix_fmt yuv420p -vf 'scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30' "$ROOT/07_nier_camera/2b_camera_swat.mp4" || true
+          fi
+
+          # MOTHER2 player name + last prayer sequence
+          dl 'https://assets.st-note.com/img/1744335621-VNOnlaivw9uEyxTzPZMAqFe0.jpg?width=1200' "$ROOT/09_mother2/player_name_entry.jpg"
+          dl 'https://blog-imgs-153-origin.fc2.com/s/s/x/ssxzero/Mother2-345.jpg' "$ROOT/09_mother2/final_prayer_player_01.jpg"
+          dl 'https://blog-imgs-153-origin.fc2.com/s/s/x/ssxzero/Mother2-346.jpg' "$ROOT/09_mother2/final_prayer_player_02.jpg"
+          dl 'https://blog-imgs-153-origin.fc2.com/s/s/x/ssxzero/Mother2-347.jpg' "$ROOT/09_mother2/final_prayer_resolution.jpg"
+
+          # Totono official manual screens (non-explicit)
+          dl 'https://rit.su/img/img_play_title.jpg' "$ROOT/10_totono_nier_end/totono_title_official.jpg"
+          dl 'https://rit.su/img/img_play_game-menu.jpg' "$ROOT/10_totono_nier_end/totono_menu_official.jpg"
+          dl 'https://rit.su/img/img_play_save.jpg' "$ROOT/10_totono_nier_end/totono_save_load_official.jpg"
+          dl 'https://rit.su/img/img_play_config.jpg' "$ROOT/10_totono_nier_end/totono_config_official.jpg"
+
+          # NieR Ending E sequence screenshots
+          dl 'https://withaterriblefate.com/wp-content/uploads/2021/01/word-image.png' "$ROOT/10_totono_nier_end/nier_e_delete_confirmation.jpg"
+          dl 'https://withaterriblefate.com/wp-content/uploads/2021/01/word-image-14.png' "$ROOT/10_totono_nier_end/nier_e_rescue_offer.jpg"
+          dl 'https://withaterriblefate.com/wp-content/uploads/2021/01/word-image-15.png' "$ROOT/10_totono_nier_end/nier_e_save_sacrifice.jpg"
+          dl 'https://withaterriblefate.com/wp-content/uploads/2021/01/word-image-16.png' "$ROOT/10_totono_nier_end/nier_e_message.jpg"
+
+          find "$ROOT" -type f -size 0 -delete || true
+          find "$ROOT" -type f -printf '%P\t%k KB\n' | sort > "$ROOT/FILE_LIST.txt"
+          cat > "$ROOT/SOURCES.md" <<'EOF'
+          # Second-pass sources
+          - 銀魂 制作費メタ: https://araragi1028.blog82.fc2.com/blog-entry-492.html
+          - 新・光神話 パルテナの鏡 screenshot: https://note.com/okenurunam/n/n40cab5208a1f
+          - Psycho Mantis ときメモ quote: https://pinion.jp/ゲーム雑学/セリフが変わるメタルギアソリッドのボス/
+          - Psycho Mantis memory-card image: https://knowyourmeme.com/photos/1335711-metal-gear
+          - リセットさん screenshots: https://fantasystudy.com/game/tobimori/reset-san1/
+          - 2B camera-swat GIF linked from GameFAQs: https://gamefaqs.gamespot.com/boards/168677-nier-automata/75125703
+          - MOTHER2 player-name screen: https://note.com/ri0sinagawa/n/n2dcfb4490ccc
+          - MOTHER2 last-prayer images: https://ssxzero.blog.fc2.com/blog-entry-930.html
+          - ととの。 official playing manual: https://rit.su/play.html
+          - NieR:Automata Ending E screenshots: https://withaterriblefate.com/2021/01/16/the-second-impact-of-nier-automatas-ending-e/
+          EOF
+
+      - name: Package
+        run: zip -r fourthwall_secondpass.zip secondpass
+
+      - name: Upload artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: fourthwall-secondpass
+          path: fourthwall_secondpass.zip
+          retention-days: 2
+
+      - name: Publish marker
+        shell: bash
+        run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.upload.outputs.artifact-id }}' > fourthwall_secondpass_marker.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add fourthwall_secondpass_marker.txt
+          git commit -m 'Temporary second-pass asset marker [skip ci]' || true
+          git push
