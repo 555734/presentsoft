@@ -1,0 +1,126 @@
+name: Temporary fourth wall voice samples
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-voice-samples-fourthwall.yml'
+permissions:
+  contents: write
+jobs:
+  synthesize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish run id
+        run: |
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" > voice_samples_run_marker.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add voice_samples_run_marker.txt
+          git commit -m 'Voice samples run marker [skip ci]'
+          git push
+      - name: Install helpers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq zip
+          python -m pip install -q requests
+      - name: Aivis samples
+        run: |
+          docker pull ghcr.io/aivis-project/aivisspeech-engine:cpu-latest
+          docker run --rm -d --name aivis_engine -p 10101:10101 ghcr.io/aivis-project/aivisspeech-engine:cpu-latest
+          ok=0
+          for i in $(seq 1 180); do
+            if curl -fsS http://127.0.0.1:10101/version >/dev/null 2>&1; then ok=1; break; fi
+            sleep 5
+          done
+          test "$ok" = 1
+          for uuid in \
+            6d11c6c2-f4a4-4435-887e-23dd60f8b8dd \
+            71e72188-2726-4739-9aa9-39567396fb2a \
+            47e53151-a378-46f3-abee-ce13aa07feb1; do
+            curl -fsS -X POST 'http://127.0.0.1:10101/aivm_models/install' \
+              -F "url=https://api.aivis-project.com/v1/aivm-models/${uuid}/download?model_type=AIVMX"
+          done
+          python - <<'PY'
+          import requests, pathlib, json
+          B='http://127.0.0.1:10101'
+          out=pathlib.Path('voice_samples'); out.mkdir(exist_ok=True)
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          speakers=requests.get(B+'/speakers',timeout=30).json()
+          configs=[
+            ('01_aivis_nise','にせ','ノーマル',1.04,0.98),
+            ('02_aivis_fumifumi','fumifumi','ノーマル',1.04,0.92),
+            ('03_aivis_aida_calm','阿井田 茂','Calm',1.06,0.92),
+          ]
+          for fn,name,style_name,speed,intona in configs:
+              s=next(x for x in speakers if x.get('name')==name)
+              st=next((x for x in s['styles'] if x.get('name')==style_name),s['styles'][0])
+              sid=st['id']
+              q=requests.post(B+'/audio_query',params={'speaker':sid,'text':text},timeout=120); q.raise_for_status()
+              a=q.json(); a['speedScale']=speed; a['intonationScale']=intona; a['pitchScale']=0.0; a['volumeScale']=1.0; a['prePhonemeLength']=0.06; a['postPhonemeLength']=0.18
+              r=requests.post(B+'/synthesis',params={'speaker':sid},json=a,timeout=180); r.raise_for_status()
+              (out/f'{fn}.wav').write_bytes(r.content)
+          PY
+          docker stop aivis_engine
+      - name: VOICEVOX samples
+        run: |
+          docker pull voicevox/voicevox_engine:cpu-latest
+          docker run --rm -d --name vv_engine -p 50021:50021 voicevox/voicevox_engine:cpu-latest
+          ok=0
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:50021/version >/dev/null 2>&1; then ok=1; break; fi
+            sleep 3
+          done
+          test "$ok" = 1
+          python - <<'PY'
+          import requests, pathlib
+          B='http://127.0.0.1:50021'
+          out=pathlib.Path('voice_samples'); out.mkdir(exist_ok=True)
+          text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          speakers=requests.get(B+'/speakers',timeout=30).json()
+          def synth(fn,name,style_pref=None,speed=1.0,intona=1.0,pitch=0.0):
+              s=next(x for x in speakers if x.get('name')==name)
+              st=next((x for x in s['styles'] if style_pref and x.get('name')==style_pref),s['styles'][0])
+              sid=st['id']
+              q=requests.post(B+'/audio_query',params={'speaker':sid,'text':text},timeout=60); q.raise_for_status()
+              a=q.json(); a['speedScale']=speed; a['intonationScale']=intona; a['pitchScale']=pitch; a['volumeScale']=1.0; a['prePhonemeLength']=0.08; a['postPhonemeLength']=0.2
+              r=requests.post(B+'/synthesis',params={'speaker':sid},json=a,timeout=120); r.raise_for_status()
+              (out/f'{fn}.wav').write_bytes(r.content)
+          synth('04_voicevox_kurono','玄野武宏','ノーマル',1.02,0.95,0.0)
+          synth('05_voicevox_aoyama','青山龍星','ノーマル',1.03,0.9,-0.02)
+          synth('06_yukkuri_style_zundamon','ずんだもん','ノーマル',0.88,0.55,-0.03)
+          PY
+          docker stop vv_engine
+      - name: Normalize and package
+        run: |
+          mkdir -p final_samples
+          for f in voice_samples/*.wav; do
+            b=$(basename "$f" .wav)
+            ffmpeg -y -hide_banner -loglevel error -i "$f" -af 'loudnorm=I=-16:LRA=7:TP=-1.5' -c:a aac -b:a 192k "final_samples/${b}.m4a"
+          done
+          cat > final_samples/README.txt <<'EOF'
+          同一文の音声比較サンプル
+          01 AivisSpeech にせ / ノーマル（若い男性）
+          02 AivisSpeech fumifumi / ノーマル（落ち着いた壮年男性）
+          03 AivisSpeech 阿井田 茂 / Calm（中年バリトン）
+          04 VOICEVOX 玄野武宏 / ノーマル（爽やかな青年）
+          05 VOICEVOX 青山龍星 / ノーマル（重厚な低音）
+          06 VOICEVOX ずんだもん / ゆっくり風調整（AquesTalkそのものではありません）
+
+          読み上げ文では「第四の壁」を「だいよんのかべ」と明示しています。
+          EOF
+          zip -r voice_samples_fourthwall.zip final_samples
+      - name: Upload
+        id: up
+        uses: actions/upload-artifact@v4
+        with:
+          name: fourthwall-voice-samples
+          path: voice_samples_fourthwall.zip
+          retention-days: 2
+      - name: Publish artifact id
+        run: |
+          printf 'run_id=%s\nartifact_id=%s\n' "$GITHUB_RUN_ID" '${{ steps.up.outputs.artifact-id }}' > voice_samples_artifact_marker.txt
+          git pull --rebase
+          git add voice_samples_artifact_marker.txt
+          git commit -m 'Voice samples artifact marker [skip ci]' || true
+          git push
