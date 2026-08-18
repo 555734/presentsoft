@@ -1,0 +1,84 @@
+name: Temporary native AquesTalk samples
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-aquestalk-native-windows-samples.yml'
+permissions:
+  contents: write
+jobs:
+  synthesize:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish run id
+        shell: pwsh
+        run: |
+          "run_id=$env:GITHUB_RUN_ID" | Out-File -Encoding ascii aquestalk_native_run_marker.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add aquestalk_native_run_marker.txt
+          git commit -m "AquesTalk native run marker [skip ci]"
+          git push
+      - name: Download official AquesTalkPlayer
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://www.a-quest.com/archive/package/aquestalkplayer_20250606.zip' -OutFile 'aquestalkplayer.zip'
+          Expand-Archive -Path 'aquestalkplayer.zip' -DestinationPath 'aq'
+          $exe = Get-ChildItem -Path aq -Recurse -Filter AquesTalkPlayer.exe | Select-Object -First 1
+          if (-not $exe) { throw 'AquesTalkPlayer.exe not found' }
+          "EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-ChildItem -Path aq -Recurse | Select-Object FullName | Format-Table -AutoSize
+          $preset = Get-ChildItem -Path aq -Recurse | Where-Object { $_.Name -match 'preset' } | Select-Object -First 1
+          if ($preset) {
+            Write-Host "PRESET=$($preset.FullName)"
+            Get-Content $preset.FullName -Encoding Default
+          }
+      - name: Generate Reimu and Marisa samples
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path final | Out-Null
+          $text='ゲームにも、これと少し似た瞬間があります。キャラクターがゲームの外にいるプレイヤーへ触れてくる時です。どちらも、だいよんのかべを破る演出です。なのに、片方は笑えて、片方は不気味です。'
+          $pairs = @(
+            @{ preset='れいむ'; file='01_aquestalk_reimu.wav' },
+            @{ preset='まりさ'; file='02_aquestalk_marisa.wav' }
+          )
+          foreach ($p in $pairs) {
+            $out = Join-Path $PWD (Join-Path 'final' $p.file)
+            Write-Host "Generating preset $($p.preset) -> $out"
+            $proc = Start-Process -FilePath $env:EXE -ArgumentList @('/P', $p.preset, '/T', $text, '/W', $out) -Wait -PassThru -NoNewWindow
+            Write-Host "ExitCode=$($proc.ExitCode)"
+            if (Test-Path $out) { Get-Item $out | Format-List Name,Length }
+          }
+          # Retry common kanji names only if kana preset did not produce a file
+          if (-not (Test-Path 'final/01_aquestalk_reimu.wav')) {
+            $out = Join-Path $PWD 'final/01_aquestalk_reimu.wav'
+            Start-Process -FilePath $env:EXE -ArgumentList @('/P','霊夢','/T',$text,'/W',$out) -Wait -NoNewWindow
+          }
+          if (-not (Test-Path 'final/02_aquestalk_marisa.wav')) {
+            $out = Join-Path $PWD 'final/02_aquestalk_marisa.wav'
+            Start-Process -FilePath $env:EXE -ArgumentList @('/P','魔理沙','/T',$text,'/W',$out) -Wait -NoNewWindow
+          }
+          Get-ChildItem final | Format-Table Name,Length
+          @'
+          Official AquesTalkPlayer voice samples for private comparison only.
+          01: preset れいむ
+          02: preset まりさ
+          Do not publish/monetize without the appropriate AQUEST commercial-content license.
+          '@ | Out-File -Encoding utf8 final/README.txt
+          Compress-Archive -Path final/* -DestinationPath aquestalk_native_samples.zip
+      - name: Upload
+        id: up
+        uses: actions/upload-artifact@v4
+        with:
+          name: aquestalk-native-samples
+          path: aquestalk_native_samples.zip
+          retention-days: 2
+      - name: Publish artifact id
+        shell: pwsh
+        run: |
+          "run_id=$env:GITHUB_RUN_ID`nartifact_id=${{ steps.up.outputs.artifact-id }}" | Out-File -Encoding ascii aquestalk_native_artifact_marker.txt
+          git pull --rebase
+          git add aquestalk_native_artifact_marker.txt
+          git commit -m "AquesTalk native artifact marker [skip ci]"
+          git push
