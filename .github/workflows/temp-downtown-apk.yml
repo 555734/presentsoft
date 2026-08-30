@@ -1,0 +1,128 @@
+name: Temporary Downtown APK Build
+
+on:
+  push:
+    paths:
+      - '.github/workflows/temp-downtown-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download free Downtown City MegaKit Standard
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/itch
+          npm install --no-save itchio-downloader@1.2.0
+          npx itchio-downloader \
+            --url "https://quaternius.itch.io/downtown-city-megakit" \
+            --downloadDirectory /tmp/itch \
+            --retries 2 \
+            --retryDelay 1500
+          ZIP="$(find /tmp/itch -type f -iname '*.zip' | head -n 1)"
+          test -n "$ZIP"
+          BYTES="$(stat -c%s "$ZIP")"
+          echo "Downloaded $ZIP ($BYTES bytes)"
+          test "$BYTES" -gt 100000000
+          test "$BYTES" -lt 450000000
+          echo "ASSET_ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Extract only required models and textures
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .temp_downtown_apk/project
+          mkdir -p app/src/main/assets/game/models
+          python3 - <<'PY'
+          import json, os, zipfile
+          zp=os.environ['ASSET_ZIP']
+          out='app/src/main/assets/game/models'
+          prefix='Exports/glTF (Godot)/'
+          models=['Building_Large_2.gltf','Building_Medium_2_001.gltf','Building_Small_1.gltf','Prop_Planter_Single.gltf','Prop_Bollard.gltf','Prop_ManholeCover.gltf']
+          required=set(models)
+          with zipfile.ZipFile(zp) as z:
+              names=set(z.namelist())
+              for model in models:
+                  p=prefix+model
+                  if p not in names: raise SystemExit('missing '+p)
+                  d=json.loads(z.read(p))
+                  for b in d.get('buffers',[]):
+                      if b.get('uri'): required.add(b['uri'])
+                  for im in d.get('images',[]):
+                      if im.get('uri'): required.add(im['uri'])
+              required.update(['T_Concrete_Asphalt_BaseColor.png','T_Concrete_BaseColor.png','T_Concrete_Normal.png','T_Dirt_BaseColor.png','T_Dirt_Normal.png'])
+              for name in sorted(required):
+                  src=prefix+name
+                  if src not in names: raise SystemExit('missing '+src)
+                  with open(os.path.join(out,name),'wb') as f: f.write(z.read(src))
+              if 'License_Standard.txt' in names:
+                  with open('app/src/main/assets/game/LICENSE_ASSETS.txt','wb') as f: f.write(z.read('License_Standard.txt'))
+          print('extracted',len(required),'files')
+          PY
+
+      - name: Optimize textures for mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v mogrify >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y -qq imagemagick; }
+          find .temp_downtown_apk/project/app/src/main/assets/game/models -type f -iname '*.png' -print0 | xargs -0 -r -n 1 mogrify -resize '1024x1024>' -strip
+
+      - name: Bundle local Three.js renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save three@0.179.1 esbuild@0.25.8
+          cd .temp_downtown_apk/project
+          mkdir -p app/src/main/assets/game
+          cp web/index.html app/src/main/assets/game/index.html
+          npx esbuild web/scene-src.js --bundle --format=iife --target=chrome100 --minify --outfile=app/src/main/assets/game/bundle.js
+          du -sh app/src/main/assets/game
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.1"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .temp_downtown_apk/project
+          gradle --no-daemon :app:assembleDebug
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Downtown-Walk-APK
+          path: .temp_downtown_apk/project/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
