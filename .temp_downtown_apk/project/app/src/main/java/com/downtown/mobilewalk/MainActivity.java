@@ -2,14 +2,20 @@ package com.downtown.mobilewalk;
 
 import android.app.Activity;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
+
+import androidx.annotation.Nullable;
+import androidx.webkit.WebViewAssetLoader;
+import androidx.webkit.WebViewClientCompat;
 
 public class MainActivity extends Activity {
     private WebView webView;
@@ -18,25 +24,41 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         getWindow().setStatusBarColor(Color.BLACK);
         getWindow().setNavigationBarColor(Color.BLACK);
+
+        final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+            .build();
+
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
-        webView.setWebViewClient(new WebViewClient());
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setWebViewClient(new WebViewClientCompat() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return assetLoader.shouldInterceptRequest(request.getUrl());
+            }
+
+            @Override
+            @SuppressWarnings("deprecation")
+            public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+                return assetLoader.shouldInterceptRequest(Uri.parse(url));
+            }
+        });
+
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
-        s.setAllowFileAccess(true);
-        s.setAllowFileAccessFromFileURLs(true);
-        s.setAllowUniversalAccessFromFileURLs(true);
+        s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
         s.setDisplayZoomControls(false);
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+
         setContentView(webView);
         hideBars();
-        webView.loadUrl("file:///android_asset/game/index.html");
+        webView.loadUrl("https://appassets.androidplatform.net/assets/game/index.html");
     }
 
     private void hideBars() {
@@ -58,4 +80,5 @@ public class MainActivity extends Activity {
     @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus); if (focus) hideBars(); }
     @Override protected void onResume() { super.onResume(); hideBars(); if (webView != null) webView.onResume(); }
     @Override protected void onPause() { if (webView != null) webView.onPause(); super.onPause(); }
+    @Override protected void onDestroy() { if (webView != null) { webView.destroy(); webView = null; } super.onDestroy(); }
 }
