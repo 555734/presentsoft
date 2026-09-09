@@ -1,0 +1,122 @@
+name: Elden Ring exact gameplay via Piped
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact YouTube gameplay through Piped APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq ffmpeg fonts-noto-cjk python3-pil
+          mkdir -p out meta review
+          INSTANCES=(
+            'https://pipedapi.kavin.rocks'
+            'https://pipedapi.syncpundit.io'
+            'https://pipedapi.moomoo.me'
+            'https://api-piped.mha.fi'
+            'https://piped-api.garudalinux.org'
+            'https://piped-api.hostux.net'
+            'https://pipedapi.qdi.fi'
+          )
+          # id|category|name
+          ITEMS=(
+            'vcH2-rL8ya4|hoarfrost|hoarfrost_boss'
+            'gXoEiA36bvM|hoarfrost|hoarfrost_before_after'
+            'FpT0eRAStuQ|hoarfrost|hoarfrost_compare'
+            'ZlmtbD_8SiU|mimic|mimic_summon'
+            'FzYMhoFu__A|mimic|mimic_gameplay'
+            'RLlz3amNlpo|mimic|mimic_boss'
+            '0qKN2J-uoJI|mimic|mimic_malenia_prepost'
+            'naANQ9xjFfk|mimic|mimic_solo_malenia'
+            'IqN2phpMWno|lmsh|lmsh_original'
+            'HoSRJJ4Popk|lmsh|lmsh_everyday'
+            'tIqoZ4ztDQE|wall|wall_50hit'
+            'k-ffeG4S4as|wall|wall_50hit_alt'
+            'oiO2minRm7c|wall|wall_50hit_short'
+          )
+          : > meta/index.tsv
+          ok=0
+          for row in "${ITEMS[@]}"; do
+            IFS='|' read -r id cat name <<< "$row"
+            echo "=== $cat $name $id ==="
+            json=''; inst=''
+            for api in "${INSTANCES[@]}"; do
+              if json=$(curl -fsSL --connect-timeout 8 --max-time 25 --retry 1 "$api/streams/$id" 2>/dev/null); then
+                if echo "$json" | jq -e '.videoStreams|length>0' >/dev/null 2>&1; then inst="$api"; break; fi
+              fi
+            done
+            if [ -z "$inst" ]; then echo "NO_INSTANCE $id"; continue; fi
+            echo "$json" > "meta/$id.json"
+            title=$(echo "$json" | jq -r '.title // ""')
+            echo "INSTANCE=$inst TITLE=$title"
+            mux=$(echo "$json" | jq -r '[.videoStreams[] | select((.videoOnly==false) and (.format=="MPEG_4") and ((.quality|capture("(?<n>[0-9]+)").n|tonumber)<=720))] | sort_by(.quality|capture("(?<n>[0-9]+)").n|tonumber) | last | .url // empty')
+            dst="out/${cat}__${name}__${id}.mp4"
+            if [ -n "$mux" ]; then
+              curl -fL --retry 3 --max-time 240 "$mux" -o "$dst" || rm -f "$dst"
+            else
+              v=$(echo "$json" | jq -r '[.videoStreams[] | select((.videoOnly==true) and (.format=="MPEG_4") and ((.quality|capture("(?<n>[0-9]+)").n|tonumber)<=720))] | sort_by(.quality|capture("(?<n>[0-9]+)").n|tonumber) | last | .url // empty')
+              a=$(echo "$json" | jq -r '[.audioStreams[] | select(.format=="M4A")]|sort_by(.bitrate)|last|.url // empty')
+              if [ -n "$v" ] && [ -n "$a" ]; then
+                curl -fL --retry 3 --max-time 240 "$v" -o "out/$id.video" || true
+                curl -fL --retry 3 --max-time 240 "$a" -o "out/$id.audio" || true
+                if [ -s "out/$id.video" ] && [ -s "out/$id.audio" ]; then
+                  ffmpeg -y -loglevel error -i "out/$id.video" -i "out/$id.audio" -t 180 -c copy "$dst" || ffmpeg -y -loglevel error -i "out/$id.video" -i "out/$id.audio" -t 180 -c:v libx264 -preset veryfast -crf 22 -c:a aac "$dst"
+                fi
+                rm -f "out/$id.video" "out/$id.audio"
+              fi
+            fi
+            if [ -s "$dst" ]; then
+              # Strip source audio. Final output will use VOICEVOX only.
+              ffmpeg -y -loglevel error -i "$dst" -t 180 -an -c:v libx264 -preset veryfast -crf 21 "${dst%.mp4}.mute.mp4"
+              mv "${dst%.mp4}.mute.mp4" "$dst"
+              printf '%s\t%s\t%s\t%s\t%s\n' "$cat" "$name" "$id" "$title" "$inst" >> meta/index.tsv
+              ok=$((ok+1))
+            fi
+          done
+          curl -fsSL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o out/official__gameplay.mp4 || true
+          curl -fsSL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o out/official__launch.mp4 || true
+          echo "OK_COUNT=$ok"
+          find out -name '*.mp4' -printf '%f|%s\n' | sort | tee meta/files.txt
+          test "$ok" -ge 6
+      - name: Make visual audit sheet
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from PIL import Image,ImageDraw,ImageFont
+          import pathlib,subprocess
+          O=pathlib.Path('out');R=pathlib.Path('review');R.mkdir(exist_ok=True)
+          rows=[]
+          for f in sorted(O.glob('*.mp4')):
+            try:d=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(f)]).decode())
+            except:d=8
+            frames=[]
+            for j,t in enumerate((max(.2,d*.10),max(.5,d*.50),max(.8,d*.85)),1):
+              p=R/f'{f.stem}_{j}.jpg';subprocess.run(['ffmpeg','-y','-loglevel','error','-ss',str(t),'-i',str(f),'-frames:v','1','-vf','scale=430:-2',str(p)])
+              if p.exists():frames.append(p)
+            rows.append((f,frames))
+          font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',17);rh=255;W=1390;im=Image.new('RGB',(W,max(rh,len(rows)*rh)),(245,245,245));d=ImageDraw.Draw(im);y=0
+          for f,frames in rows:
+            d.rectangle((0,y,W,y+rh-2),fill='white',outline=(210,210,210));d.text((8,y+6),f.name[:105],font=font,fill='black');x=8
+            for p in frames:
+              q=Image.open(p).convert('RGB');q.thumbnail((440,205));im.paste(q,(x,y+38));x+=455
+            y+=rh
+          im.save(R/'CONTACT_SHEET.jpg',quality=90)
+          PY
+      - name: Upload exact real gameplay pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-piped-real-gameplay
+          path: |
+            out/
+            meta/
+            review/CONTACT_SHEET.jpg
+          compression-level: 0
+          retention-days: 7
