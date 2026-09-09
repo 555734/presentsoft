@@ -1,0 +1,91 @@
+name: Elden Ring core 4 fast gameplay
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch four exact real-gameplay sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq ffmpeg fonts-noto-cjk python3-pil
+          mkdir -p out meta review
+          APIS=(
+            'https://pipedapi.syncpundit.io'
+            'https://api-piped.mha.fi'
+            'https://piped-api.hostux.net'
+            'https://pipedapi.qdi.fi'
+            'https://pipedapi.moomoo.me'
+            'https://pipedapi.kavin.rocks'
+          )
+          ITEMS=(
+            'vcH2-rL8ya4|hoarfrost|90'
+            'naANQ9xjFfk|mimic|90'
+            'IqN2phpMWno|lmsh|180'
+            'tIqoZ4ztDQE|wall|90'
+          )
+          ok=0
+          for row in "${ITEMS[@]}"; do
+            IFS='|' read -r id name seconds <<< "$row"
+            json=''; api=''
+            for x in "${APIS[@]}"; do
+              echo "TRY $x $id"
+              if json=$(curl -fsSL --connect-timeout 3 --max-time 8 "$x/streams/$id" 2>/dev/null) && echo "$json"|jq -e '.videoStreams|length>0' >/dev/null 2>&1; then api="$x"; break; fi
+            done
+            [ -n "$api" ] || { echo "NO_API $id"; continue; }
+            title=$(echo "$json"|jq -r '.title // ""')
+            echo "$json" > "meta/$name.json"
+            # Prefer any MP4 video stream <=720p; source audio is intentionally unused.
+            v=$(echo "$json" | jq -r '[.videoStreams[] | select((.format=="MPEG_4") and ((.quality|capture("(?<n>[0-9]+)").n|tonumber)<=720))] | sort_by(.quality|capture("(?<n>[0-9]+)").n|tonumber) | last | .url // empty')
+            [ -n "$v" ] || { echo "NO_VIDEO_URL $id"; continue; }
+            echo -e "$name\t$id\t$title\t$api" >> meta/index.tsv
+            # Stream directly and stop after the useful opening section; do not download the entire upload.
+            ffmpeg -y -loglevel error -i "$v" -t "$seconds" -an -vf 'scale=960:-2' -c:v libx264 -preset veryfast -crf 21 -movflags +faststart "out/$name.mp4" || true
+            if [ -s "out/$name.mp4" ]; then ok=$((ok+1)); fi
+          done
+          # Official game footage, no fan art.
+          curl -fsSL --retry 3 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o out/official.mp4 || true
+          echo "OK=$ok"
+          find out -type f -name '*.mp4' -printf '%f|%s\n' | tee meta/files.txt
+          test "$ok" -ge 3
+      - name: Audit actual frames
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from PIL import Image,ImageDraw,ImageFont
+          import pathlib,subprocess
+          O=pathlib.Path('out');R=pathlib.Path('review');R.mkdir(exist_ok=True)
+          rows=[]
+          for f in sorted(O.glob('*.mp4')):
+            try:d=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(f)]).decode())
+            except:d=8
+            fs=[]
+            for j,t in enumerate((max(.2,d*.12),max(.5,d*.50),max(.8,d*.82)),1):
+              p=R/f'{f.stem}_{j}.jpg';subprocess.run(['ffmpeg','-y','-loglevel','error','-ss',str(t),'-i',str(f),'-frames:v','1','-vf','scale=430:-2',str(p)])
+              if p.exists():fs.append(p)
+            rows.append((f,fs))
+          font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',18);rh=260;W=1390;sheet=Image.new('RGB',(W,max(rh,len(rows)*rh)),(245,245,245));d=ImageDraw.Draw(sheet);y=0
+          for f,fs in rows:
+            d.rectangle((0,y,W,y+rh-2),fill='white',outline=(210,210,210));d.text((8,y+7),f.name,font=font,fill='black');x=8
+            for p in fs:
+              q=Image.open(p).convert('RGB');q.thumbnail((440,210));sheet.paste(q,(x,y+40));x+=455
+            y+=rh
+          sheet.save(R/'CONTACT_SHEET.jpg',quality=90)
+          PY
+      - name: Upload core gameplay
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-core4-real-gameplay
+          path: |
+            out/
+            meta/
+            review/CONTACT_SHEET.jpg
+          compression-level: 0
+          retention-days: 7
