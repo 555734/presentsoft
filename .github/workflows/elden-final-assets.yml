@@ -11,94 +11,169 @@ on:
 jobs:
   assets:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install media tools
+      - name: Install tools
         run: |
           set -eux
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg jq fonts-noto-cjk
-          python3 -m pip install --break-system-packages -U yt-dlp
-          mkdir -p pack/video pack/audio pack/audit
+          sudo apt-get install -y -qq ffmpeg jq curl fonts-noto-cjk python3
+          mkdir -p pack/video pack/audio pack/audit pack/meta render
 
-      - name: Download real Elden Ring gameplay from Bilibili
+      - name: Start YouTube session and Cobalt
+        run: |
+          set -eux
+          docker network create cobalt-net
+          docker run -d --name yt-session --network cobalt-net ghcr.io/imputnet/yt-session-generator:webserver
+          for i in $(seq 1 90); do
+            if docker run --rm --network cobalt-net curlimages/curl:8.12.1 -fsS http://yt-session:8080/token >/tmp/yt_token.json 2>/dev/null; then
+              test -s /tmp/yt_token.json && break
+            fi
+            sleep 2
+          done
+          test -s /tmp/yt_token.json
+          cat /tmp/yt_token.json
+          docker run -d --name cobalt --network cobalt-net -p 9000:9000 \
+            -e API_URL=http://127.0.0.1:9000/ \
+            -e YOUTUBE_SESSION_SERVER=http://yt-session:8080 \
+            ghcr.io/imputnet/cobalt:11
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:9000/ >/tmp/cobalt.json && break || sleep 2; done
+          cat /tmp/cobalt.json
+
+      - name: Download HQ real gameplay only
         run: |
           set -u
-          fetch_bili() {
-            name="$1"; url="$2"; sec="$3"
-            echo "===== $name $url ====="
-            yt-dlp --no-playlist \
-              --download-sections "*0-${sec}" --force-keyframes-at-cuts \
-              -f 'bv*[height<=480]+ba/b[height<=480]/b' \
-              --merge-output-format mp4 \
-              -o "pack/video/${name}.%(ext)s" "$url" || return 1
-            f=$(find pack/video -maxdepth 1 -type f -name "${name}.*" | head -1)
-            [ -n "$f" ] || return 1
-            ffmpeg -y -loglevel error -i "$f" -an -vf "scale='min(854,iw)':-2,fps=30" -c:v libx264 -crf 20 -preset veryfast -pix_fmt yuv420p "pack/video/${name}_norm.mp4"
+          fetch() {
+            label="$1"; url="$2"
+            payload=$(jq -nc --arg u "$url" '{url:$u,downloadMode:"mute",videoQuality:"1080",youtubeVideoCodec:"h264",youtubeVideoContainer:"mp4",alwaysProxy:true,disableMetadata:true}')
+            resp=$(curl -sS --max-time 120 -X POST http://127.0.0.1:9000/ -H 'Accept: application/json' -H 'Content-Type: application/json' -d "$payload" || true)
+            echo "$resp" > "pack/meta/${label}.json"
+            status=$(echo "$resp" | jq -r '.status // ""' 2>/dev/null)
+            dl=$(echo "$resp" | jq -r 'if .status=="tunnel" or .status=="redirect" then .url elif .status=="picker" then ([.picker[] | select(.type=="video")][0].url // "") elif .status=="local-processing" then (.tunnel[0] // "") else "" end' 2>/dev/null)
+            if [ -z "$dl" ]; then echo "FAIL $label $status"; return 1; fi
+            curl -fL --retry 4 --retry-delay 2 --max-time 300 "$dl" -o "pack/video/${label}.bin" || return 1
+            ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "pack/video/${label}.bin" > "pack/meta/${label}_probe.json" || return 1
+            ffmpeg -y -loglevel error -i "pack/video/${label}.bin" -an -vf "scale='min(1920,iw)':-2" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "pack/video/${label}.mp4" || return 1
+            rm -f "pack/video/${label}.bin"
+            echo "OK $label"
           }
 
-          # Launch-era Hoarfrost Stomp demo/guide. Description explicitly says it can carry through bosses.
-          fetch_bili hoarfrost 'https://www.bilibili.com/video/BV1m34y1k7g9/' 120 || true
-          # Mimic Tear guide/demo, explicitly showing the powerful spirit ash.
-          fetch_bili mimic 'https://www.bilibili.com/video/BV1Uq4y1v7He/' 120 || true
-          # Let Me Solo Her retrospective containing actual LMSH/Malenia footage.
-          fetch_bili lmsh 'https://www.bilibili.com/video/BV1cZ4y127Kd/' 120 || true
-          # Exact launch-era Volcano Manor 50-hit hidden wall clip.
-          fetch_bili wall50 'https://www.bilibili.com/video/BV1Fu411q768/' 90 || true
+          fetch hoarfrost_a 'https://www.youtube.com/watch?v=QmHaTKNbVZ4' || true
+          fetch hoarfrost_b 'https://www.youtube.com/watch?v=Ul7WYPGScjc' || true
+          fetch hoarfrost_c 'https://www.youtube.com/watch?v=HMXSuYYXUXE' || true
 
-          find pack/video -type f -printf '%f|%s\n' | sort
-          test -s pack/video/hoarfrost_norm.mp4
-          test -s pack/video/mimic_norm.mp4
-          test -s pack/video/lmsh_norm.mp4
-          test -s pack/video/wall50_norm.mp4
+          fetch mimic_a 'https://www.youtube.com/watch?v=f6VB0oxVmXA' || true
+          fetch mimic_b 'https://www.youtube.com/watch?v=1NPbxONMdxM' || true
+          fetch mimic_c 'https://www.youtube.com/watch?v=0qKN2J-uoJI' || true
 
-      - name: Generate exact VOICEVOX Shikoku Metan narration
+          fetch lmsh_a 'https://www.youtube.com/watch?v=1cE-2nFhKpo' || true
+          fetch lmsh_b 'https://www.youtube.com/watch?v=QKUlaYOaAAM' || true
+          fetch lmsh_c 'https://www.youtube.com/watch?v=IqN2phpMWno' || true
+
+          fetch wall_a 'https://www.youtube.com/watch?v=i-bAE7axvVE' || true
+          fetch wall_b 'https://www.youtube.com/watch?v=4t52LiFq85I' || true
+          fetch wall_c 'https://www.youtube.com/watch?v=1kyHFATAS3I' || true
+
+          curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o pack/video/official_a.mp4
+          curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o pack/video/official_b.mp4
+
+          for p in hoarfrost mimic lmsh wall; do
+            n=$(find pack/video -maxdepth 1 -name "${p}_*.mp4" | wc -l)
+            echo "$p count=$n"
+            test "$n" -ge 2
+          done
+
+      - name: Audit frames
+        run: |
+          set -eux
+          mkdir -p pack/audit/frames
+          for f in pack/video/*.mp4; do
+            b=$(basename "$f" .mp4)
+            d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+            for frac in .12 .33 .55 .77; do
+              t=$(python3 -c 'import sys; print(max(.1,float(sys.argv[1])*float(sys.argv[2])))' "$d" "$frac")
+              ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "pack/audit/frames/${b}_${frac}.jpg" || true
+            done
+          done
+          ffmpeg -y -loglevel error -pattern_type glob -i 'pack/audit/frames/*.jpg' -vf 'scale=320:-2,tile=4x20:padding=4:margin=4' -frames:v 1 pack/audit/contact_sheet.jpg
+
+      - name: Generate actual VOICEVOX Shikoku Metan
         run: |
           set -eux
           docker pull voicevox/voicevox_engine:cpu-latest
           docker run -d --name voicevox -p 127.0.0.1:50021:50021 voicevox/voicevox_engine:cpu-latest
-          for i in $(seq 1 120); do
-            curl -fsS http://127.0.0.1:50021/version && break || true
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:50021/speakers > pack/audio/speakers.json
-          cat > pack/audio/script.txt <<'TXT'
-          エルデンリングの発売初期の狂気がヤバい。2022年に発売され、世界中で大ヒットした今作ですが、初期のゲーム環境はまさに狂気の沙汰でした。まず猛威を振るったのが戦技「霜踏み」。どんな強力なボスも、足をバタバタ踏み鳴らすだけであっさり溶けていくため、当時はフロム史上最強の足踏み状態。世界中で謎の足踏みラッシュが発生しました。さらに、自分とほぼ同じ分身を呼び出す「写し身の雫」に至っては、プレイヤー本人が後ろで見守る中、分身がボスをボコボコにするという主客転倒な事態が多発。作中最強クラスのボス「マレニア」の召喚サイン前には、頭に壺を被った裸同然の男「Let Me Solo Her」が現れ、ほぼノーダメージで倒し続け世界的な英雄に。後にはバンダイナムコから、記念品として本物の剣まで贈られました。極めつけは「この先、隠し道があるぞ」という嘘メッセージ。壁を叩き続ける褪せ人が続出する中、発売初期には本当に数十回叩くと消える異常な壁が火山館で発見。後のアップデートで修正されました。
-          TXT
-          curl -fsS -X POST 'http://127.0.0.1:50021/audio_query?speaker=2' \
-            --get --data-urlencode text@pack/audio/script.txt > pack/audio/query_raw.json
-          jq '.speedScale=1.22 | .pitchScale=0 | .intonationScale=1.0 | .volumeScale=1.0 | .postPhonemeLength=0.08' \
-            pack/audio/query_raw.json > pack/audio/query.json
-          curl -fsS -H 'Content-Type: application/json' -X POST \
-            -d @pack/audio/query.json 'http://127.0.0.1:50021/synthesis?speaker=2' > pack/audio/metan.wav
-          ffprobe -v error -show_entries format=duration -of default=nw=1 pack/audio/metan.wav
-          test -s pack/audio/metan.wav
-
-      - name: Build visual audit sheets
-        run: |
-          set -eux
-          for f in pack/video/*_norm.mp4; do
-            b=$(basename "$f" _norm.mp4)
-            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
-            python3 - "$dur" > /tmp/times.txt <<'PY'
-          import sys
-          d=max(float(sys.argv[1]),1.0)
-          print(' '.join(f'{d*x:.3f}' for x in (0.05,0.15,0.25,0.35,0.45,0.55,0.65,0.75,0.85,0.95)))
+          for i in $(seq 1 120); do curl -fsS http://127.0.0.1:50021/version && break || sleep 2; done
+          curl -fsS http://127.0.0.1:50021/speakers > pack/meta/voicevox_speakers.json
+          jq '.[] | select(.name=="四国めたん")' pack/meta/voicevox_speakers.json
+          python3 - <<'PY'
+          import json, urllib.parse, urllib.request, os
+          lines=[
+          ('intro','エルデンリング、発売初期の狂気がヤバい。2022年、世界中で大ヒットしたこのゲームですが、初期環境は本当にめちゃくちゃでした。'),
+          ('hoarfrost','まず猛威を振るったのが戦技、霜踏み。地面を踏むだけで広範囲に大ダメージ。強敵までみるみる溶けて、発売直後は足をバタバタ踏む褪せ人が大量発生しました。'),
+          ('mimic','さらに写し身の雫。自分とほぼ同じ装備の分身を呼べるため、本人が後ろで見ている間に、分身だけでボスを倒してしまう光景まで普通に発生。'),
+          ('lmsh','そしてマレニア前に現れた伝説が、レット・ミー・ソロ・ハー。壺をかぶったほぼ裸の姿で、他人の世界のマレニアを何度も一人で撃破。世界的な英雄になり、後にはバンダイナムコから記念品として実物の剣まで贈られました。'),
+          ('wall','極めつけは、火山館で見つかった異常に硬い隠し壁。普通の壁なら一撃なのに、これは何十回も殴ると消える。嘘メッセージを疑っていた褪せ人たちに、本当に壁を殴り続ける理由が生まれてしまいました。ちなみにこれはアップデートで追加された壁ではなく、発売初期から存在し、後のパッチで修正されています。')]
+          for key,text in lines:
+              q='http://127.0.0.1:50021/audio_query?'+urllib.parse.urlencode({'text':text,'speaker':2})
+              req=urllib.request.Request(q,method='POST')
+              obj=json.load(urllib.request.urlopen(req))
+              obj['speedScale']=1.27; obj['intonationScale']=1.05; obj['volumeScale']=1.0
+              data=json.dumps(obj,ensure_ascii=False).encode()
+              req=urllib.request.Request('http://127.0.0.1:50021/synthesis?speaker=2',data=data,headers={'Content-Type':'application/json'},method='POST')
+              open(f'pack/audio/{key}.wav','wb').write(urllib.request.urlopen(req).read())
           PY
-            i=0
-            for t in $(cat /tmp/times.txt); do
-              ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "pack/audit/${b}_${i}.jpg" || true
-              i=$((i+1))
-            done
-          done
-          ffmpeg -y -loglevel error -pattern_type glob -i 'pack/audit/*.jpg' \
-            -vf 'scale=320:-2,tile=5x8:padding=4:margin=4' -frames:v 1 pack/audit/contact_sheet.jpg || true
+
+      - name: Render final 9x16 short
+        run: |
+          cat > /tmp/render.py <<'PY'
+          import os, subprocess, glob
+          font='/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+          sections=[
+          ('intro','エルデンリング発売初期の狂気','2022年 初期環境がヤバすぎた','official'),
+          ('hoarfrost','戦技「霜踏み」が猛威','踏むだけでボスが溶ける','hoarfrost'),
+          ('mimic','写し身の雫が強すぎる','本人より分身が働く','mimic'),
+          ('lmsh','伝説「Let Me Solo Her」','壺頭ほぼ全裸でマレニアを撃破','lmsh'),
+          ('wall','何十回も殴ると消える壁','発売初期から存在 → 後に修正','wall')]
+          os.makedirs('render',exist_ok=True)
+          def duration(p):
+              return float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',p],text=True).strip())
+          def esc(s): return s.replace('\\','\\\\').replace(':','\\:').replace("'","\\'")
+          finals=[]
+          for key,top,bottom,prefix in sections:
+              ad=duration(f'pack/audio/{key}.wav')
+              clips=sorted(glob.glob(f'pack/video/{prefix}_*.mp4')) if prefix!='official' else sorted(glob.glob('pack/video/official_*.mp4'))
+              chunk=1.55; t=0.0; i=0; parts=[]
+              while t < ad-0.01:
+                  ln=min(chunk,ad-t); clip=clips[i%len(clips)]; cd=duration(clip)
+                  usable=max(cd-ln-1.0,1.0); off=min(max(.2,((i*6.9)%usable)+.3),max(.2,cd-ln-.1))
+                  out=f'render/{key}_{i:02d}.mp4'
+                  subprocess.run(['ffmpeg','-y','-loglevel','error','-ss',str(off),'-i',clip,'-t',str(ln),'-vf','scale=360:370:force_original_aspect_ratio=increase,crop=360:370','-an','-r','30','-c:v','libx264','-preset','veryfast','-crf','18','-pix_fmt','yuv420p',out],check=True)
+                  parts.append(out); t+=ln; i+=1
+              lst=f'render/{key}.txt'
+              with open(lst,'w') as f:
+                  for p in parts: f.write("file '"+os.path.abspath(p)+"'\n")
+              center=f'render/{key}_center.mp4'
+              subprocess.run(['ffmpeg','-y','-loglevel','error','-f','concat','-safe','0','-i',lst,'-t',str(ad),'-c:v','libx264','-preset','veryfast','-crf','18','-pix_fmt','yuv420p',center],check=True)
+              out=f'render/{key}_final.mp4'
+              fc=(f"[0:v][1:v]overlay=0:135:shortest=1[v];[v]drawtext=fontfile={font}:text='{esc(top)}':fontcolor=black:fontsize=29:x=(w-text_w)/2:y=28,drawtext=fontfile={font}:text='{esc(bottom)}':fontcolor=black:fontsize=25:x=(w-text_w)/2:y=535[outv]")
+              subprocess.run(['ffmpeg','-y','-loglevel','error','-f','lavfi','-i',f'color=c=white:s=360x640:r=30:d={ad}','-i',center,'-i',f'pack/audio/{key}.wav','-filter_complex',fc,'-map','[outv]','-map','2:a','-t',str(ad),'-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p','-c:a','aac','-b:a','160k',out],check=True)
+              finals.append(out)
+          with open('render/final.txt','w') as f:
+              for p in finals: f.write("file '"+os.path.abspath(p)+"'\n")
+          subprocess.run(['ffmpeg','-y','-loglevel','error','-f','concat','-safe','0','-i','render/final.txt','-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p','-c:a','aac','-b:a','160k','pack/ELDEN_RING_launch_chaos_HQ_Metan.mp4'],check=True)
+          PY
+          python3 /tmp/render.py
+          ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height -of json pack/ELDEN_RING_launch_chaos_HQ_Metan.mp4
 
       - uses: actions/upload-artifact@v4
         with:
-          name: elden-final-real-assets
-          path: pack/
+          name: elden-final-hq-metan
+          path: |
+            pack/ELDEN_RING_launch_chaos_HQ_Metan.mp4
+            pack/audit/contact_sheet.jpg
+            pack/meta/*_probe.json
+            pack/meta/voicevox_speakers.json
           compression-level: 0
-          retention-days: 7
+          retention-days: 14
