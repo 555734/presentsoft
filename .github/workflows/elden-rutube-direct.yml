@@ -1,0 +1,104 @@
+name: Elden Ring real gameplay alternate hosts
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-cjk python3-pip
+          python3 -m pip install --break-system-packages -U yt-dlp pillow
+          mkdir -p out meta review
+      - name: Fetch alternate-host real gameplay
+        shell: bash
+        run: |
+          set +e
+          dl(){
+            name="$1"; url="$2"; section="$3"
+            echo "===== $name $url $section =====" | tee -a meta/download.log
+            yt-dlp --no-playlist --download-sections "$section" --force-keyframes-at-cuts \
+              -f 'bv*[height<=720]+ba/b[height<=720]/best' --merge-output-format mp4 \
+              -o "out/${name}.%(ext)s" "$url" 2>&1 | tee -a meta/download.log
+            return 0
+          }
+
+          # Hoarfrost: launch-era Streamable post + gameplay walkthrough around the Ash of War pickup.
+          dl hoarfrost_streamable 'https://streamable.com/3yq05h' '*0-120'
+          dl hoarfrost_walkthrough 'https://rutube.ru/video/09b48410179923e94ee91bd66e82fb59/' '*480-570'
+
+          # Mimic Tear: real Malenia gameplay using Mimic + real Mimic boss/gameplay footage.
+          dl mimic_malenia 'https://rutube.ru/video/f6f4c594abf9716058e985629f0f7719/' '*125-365'
+          dl mimic_boss 'https://rutube.ru/video/c61b39bb572edc0094d57b3d38abac0c/' '*690-850'
+
+          # Let Me Solo Her: mirrored explainer containing the original real gameplay; later visually audited before cutting.
+          dl lmsh_mirror 'https://rutube.ru/video/7d5b11cff06ac780a050659390188fa8/' '*0-376'
+          dl lmsh_story 'https://rutube.ru/video/09a5c597055957819972246af15e5b57/' '*475-900'
+
+          # 50-hit wall: direct original Gfycat MP4 preserved in a 2022 article.
+          curl -fL --retry 4 --connect-timeout 10 --max-time 180 \
+            'https://thumbs.gfycat.com/BlissfulHideousAntlion-mobile.mp4' \
+            -o out/wall50_original.mp4 2>&1 | tee -a meta/download.log
+
+          # Official in-game footage for the opening.
+          curl -fsSL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o out/official_gameplay.mp4 || true
+          curl -fsSL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o out/official_launch.mp4 || true
+
+          # Normalize/mute source audio. Remove tiny/broken files.
+          for f in out/*.mp4; do
+            [ -e "$f" ] || continue
+            size=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$size" -lt 30000 ]; then rm -f "$f"; continue; fi
+            ffmpeg -y -loglevel error -i "$f" -an -vf 'scale=960:-2:force_original_aspect_ratio=decrease' \
+              -c:v libx264 -preset veryfast -crf 21 -movflags +faststart "${f%.mp4}.norm.mp4" || { rm -f "${f%.mp4}.norm.mp4"; continue; }
+            mv "${f%.mp4}.norm.mp4" "$f"
+          done
+          find out -maxdepth 1 -type f -name '*.mp4' -printf '%f|%s\n' | sort | tee meta/files.txt
+          count=$(find out -maxdepth 1 -type f -name '*.mp4' | wc -l)
+          echo "COUNT=$count" | tee meta/count.txt
+          test "$count" -ge 5
+      - name: Build visual audit contact sheet
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from PIL import Image,ImageDraw,ImageFont
+          import pathlib,subprocess,json
+          O=pathlib.Path('out');R=pathlib.Path('review');R.mkdir(exist_ok=True)
+          rows=[]
+          for f in sorted(O.glob('*.mp4')):
+            try:d=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(f)]).decode().strip())
+            except:d=8
+            times=(max(.2,d*.08),max(.4,d*.28),max(.6,d*.50),max(.8,d*.72),max(1.0,d*.90))
+            frames=[]
+            for j,t in enumerate(times,1):
+              p=R/f'{f.stem}_{j}.jpg'
+              subprocess.run(['ffmpeg','-y','-loglevel','error','-ss',str(t),'-i',str(f),'-frames:v','1','-vf','scale=320:-2',str(p)])
+              if p.exists():frames.append(p)
+            rows.append((f,frames))
+          font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',16)
+          rh=225;W=1650;sheet=Image.new('RGB',(W,max(rh,len(rows)*rh)),(245,245,245));d=ImageDraw.Draw(sheet);y=0
+          for f,frames in rows:
+            d.rectangle((0,y,W,y+rh-2),fill='white',outline=(205,205,205));d.text((8,y+6),f.name,font=font,fill='black');x=8
+            for p in frames:
+              q=Image.open(p).convert('RGB');q.thumbnail((315,180));sheet.paste(q,(x,y+35));x+=325
+            y+=rh
+          sheet.save(R/'CONTACT_SHEET.jpg',quality=90)
+          PY
+      - name: Upload pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-real-gameplay-alt-hosts
+          path: |
+            out/
+            meta/
+            review/CONTACT_SHEET.jpg
+          compression-level: 0
+          retention-days: 7

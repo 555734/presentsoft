@@ -1,0 +1,111 @@
+name: Elden Ring verified topic stills
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-pip imagemagick
+          python3 -m pip install --break-system-packages requests beautifulsoup4 pillow
+          mkdir -p pack/stills pack/meta
+
+      - name: Download verified real-game / real-world images
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import os, re, requests
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin
+          from PIL import Image
+          from io import BytesIO
+
+          out='pack/stills'; os.makedirs(out,exist_ok=True)
+          headers={'User-Agent':'Mozilla/5.0'}
+
+          def save_url(name,url):
+              try:
+                  r=requests.get(url,headers=headers,timeout=30)
+                  r.raise_for_status()
+                  im=Image.open(BytesIO(r.content)).convert('RGB')
+                  if im.width < 300 or im.height < 180: return False
+                  p=os.path.join(out,name+'.jpg'); im.save(p,quality=94)
+                  print('SAVED',name,im.size,url)
+                  return True
+              except Exception as e:
+                  print('FAIL',name,url,e); return False
+
+          # Stable direct images found in editorial coverage.
+          save_url('mimic_gamesradar','https://cdn.mos.cms.futurecdn.net/ktbpFCzLzStTrJJE893oXn.jpg')
+          save_url('wall_imgur','https://i.imgur.com/fWjkRga.jpeg')
+          save_url('lmsh_gift','https://static1-br.millenium.gg/articles/7/10/72/7/%40/127793-let-me-solo-her-ganhou-uma-espada-de-presente-da-bandai-namco-por-derrotar-malenia-1000-vezes-full-1.jpg')
+          save_url('lmsh_battle_verge','https://cdn-cf-east.streamable.com/image/anshdc.jpg?Expires=1772355879686&Key-Pair-Id=APKAIEYUVEN4EVB2OKEQ&Signature=gqbZ--B9kVnVnpC9eJIUXOUcEeQ7T4ka2hKNO-~hCl1bfFGvVXgZlzUW~kqIgdD80QGk~Nc9DWVOBbpDie93EbiZmZzr6lJQySk4kc1mLfkfNeuJWA3BviEMwlJkNaGLM~k8uodRAiupOCBsPMbzzCZvDu8~EQaPmHgjjdVT~7tUwBDL5juD-lBb2F~cvM9lAMdkyIr9D5kWj4wpl5QTK82Q3Aqtm04GiBueAq3o3GPMjBCpILuq2Cd6FnO2aVJY0TMT~MMih4R7UqCdOy9IkNWuvjJ0eD8EWWXN3Y67WMvOpvkXjjHBeNLw5bjjBVovSm5y4TNJLEf1I9y2MxAcrA__')
+
+          # Scrape article screenshots for Hoarfrost and LMSH. Only save images whose alt/title/caption names the topic.
+          pages=[
+            ('hoarfrost','https://exputer.com/guides/elden-ring-hoarfrost-stomp-location/',('hoarfrost','frost stomp')),
+            ('lmsh','https://exputer.com/guides/elden-ring-let-me-solo-her/',('let me solo','malenia')),
+          ]
+          for prefix,page,keys in pages:
+              try:
+                  html=requests.get(page,headers=headers,timeout=30).text
+                  soup=BeautifulSoup(html,'html.parser')
+                  n=0
+                  for img in soup.find_all('img'):
+                      text=' '.join([img.get('alt',''),img.get('title','')]).lower()
+                      src=img.get('data-src') or img.get('data-lazy-src') or img.get('src')
+                      if not src: continue
+                      if not any(k in text for k in keys): continue
+                      src=urljoin(page,src)
+                      if save_url(f'{prefix}_{n}',src): n+=1
+                      if n>=8: break
+              except Exception as e: print('PAGEFAIL',page,e)
+
+          # Keep only decodable images and emit dimensions.
+          with open('pack/meta/images.tsv','w') as f:
+              for fn in sorted(os.listdir(out)):
+                  p=os.path.join(out,fn)
+                  try:
+                      im=Image.open(p); f.write(f'{fn}\t{im.width}\t{im.height}\n')
+                  except: pass
+          PY
+          cat pack/meta/images.tsv
+          test $(find pack/stills -type f -name '*.jpg' | wc -l) -ge 5
+
+      - name: Build contact sheet
+        run: |
+          python3 - <<'PY'
+          from PIL import Image,ImageOps,ImageDraw
+          import glob,os,math
+          files=sorted(glob.glob('pack/stills/*.jpg'))
+          thumbs=[]
+          for p in files:
+              im=Image.open(p).convert('RGB')
+              im.thumbnail((360,210))
+              card=Image.new('RGB',(380,250),'white')
+              card.paste(im,((380-im.width)//2,5))
+              ImageDraw.Draw(card).text((8,222),os.path.basename(p),fill='black')
+              thumbs.append(card)
+          cols=3; rows=math.ceil(len(thumbs)/cols)
+          sheet=Image.new('RGB',(cols*380,rows*250),(230,230,230))
+          for i,im in enumerate(thumbs): sheet.paste(im,((i%cols)*380,(i//cols)*250))
+          sheet.save('pack/contact.jpg',quality=90)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elden-verified-topic-stills
+          path: pack/
+          compression-level: 0
+          retention-days: 7

@@ -1,0 +1,35 @@
+name: Elden Ring Final Assets
+
+on:
+  push:
+    branches: [chatgpt/elden-runner]
+    paths:
+      - '.github/workflows/elden-final-assets.yml'
+      - 'elden-final-assets-trigger.txt'
+      - 'scripts/elden_hq_build.sh'
+      - 'scripts/render_elden_hq.py'
+  workflow_dispatch:
+
+jobs:
+  assets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq curl fonts-noto-cjk python3 python3-pip
+      - name: Build from HQ YouTube gameplay and VOICEVOX Metan
+        run: bash scripts/elden_hq_build.sh
+      - name: Upload finished video and audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-final-hq-metan
+          path: |
+            pack/ELDEN_RING_launch_chaos_HQ_Metan.mp4
+            pack/audit/contact_sheet.jpg
+            pack/meta/*_probe.json
+            pack/meta/voicevox_speakers.json
+          compression-level: 0
+          retention-days: 14

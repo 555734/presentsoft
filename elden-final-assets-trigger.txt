@@ -1,0 +1,1 @@
+trigger 2026-09-09 fast HQ short-segment YouTube-source build + VOICEVOX Metan v4

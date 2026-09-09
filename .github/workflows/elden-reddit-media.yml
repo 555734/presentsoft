@@ -1,0 +1,70 @@
+name: Elden Ring Reddit gameplay media
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  reddit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve and download Reddit/Streamable gameplay
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq
+          python3 -m pip install --break-system-packages -U yt-dlp
+          mkdir -p out meta
+          # All IDs below are launch-era Elden Ring posts with shared gameplay media.
+          POSTS=(
+            't786s6|hoarfrost'
+            'td7zhs|hoarfrost_pvp'
+            'tex5it|mimic'
+            'taig9w|mimic_carry'
+            'tpvmgi|mimic_save'
+            'th3cao|wall50'
+            'thdcey|wall50_second'
+          )
+          : > meta/resolved.tsv
+          ok=0
+          for row in "${POSTS[@]}"; do
+            IFS='|' read -r id name <<< "$row"
+            echo "=== $id $name ==="
+            json=$(curl -fsSL --retry 3 -A 'Mozilla/5.0 ChatGPTMaterialCollector/1.0' "https://www.reddit.com/r/Eldenring/comments/$id.json?raw_json=1" || true)
+            if [ -z "$json" ]; then echo "REDDIT_JSON_FAIL $id"; continue; fi
+            echo "$json" > "meta/$id.json"
+            url=$(echo "$json" | jq -r '.[0].data.children[0].data.url_overridden_by_dest // .[0].data.children[0].data.url // empty')
+            fallback=$(echo "$json" | jq -r '.[0].data.children[0].data.secure_media.reddit_video.fallback_url // empty')
+            hls=$(echo "$json" | jq -r '.[0].data.children[0].data.secure_media.reddit_video.hls_url // empty')
+            echo "URL=$url"
+            echo "FALLBACK=$fallback"
+            echo "HLS=$hls"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$name" "$url" "$fallback" "$hls" >> meta/resolved.tsv
+            dst="out/${name}_${id}.mp4"
+            if [ -n "$fallback" ]; then
+              ffmpeg -y -loglevel error -i "$fallback" -t 120 -an -c:v libx264 -preset veryfast -crf 21 "$dst" || true
+            elif [ -n "$hls" ]; then
+              ffmpeg -y -loglevel error -i "$hls" -t 120 -an -c:v libx264 -preset veryfast -crf 21 "$dst" || true
+            elif [ -n "$url" ]; then
+              yt-dlp --no-playlist --download-sections '*0-120' --force-keyframes-at-cuts -f 'best[height<=720]/best' --merge-output-format mp4 -o "$dst" "$url" || true
+            fi
+            if [ -s "$dst" ]; then ok=$((ok+1)); fi
+          done
+          echo "OK=$ok"
+          cat meta/resolved.tsv
+          find out -type f -printf '%f|%s\n' | sort
+          test "$ok" -ge 3
+      - name: Upload Reddit gameplay
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-reddit-real-gameplay
+          path: |
+            out/
+            meta/
+          compression-level: 0
+          retention-days: 7

@@ -1,0 +1,124 @@
+name: Elden Ring exact gameplay sources
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yt-dlp and PO-token provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-cjk python3-pip
+          python3 -m pip install --break-system-packages -U yt-dlp bgutil-ytdlp-pot-provider yt-dlp-ejs pillow
+          docker pull brainicism/bgutil-ytdlp-pot-provider:latest
+          docker run --name bgutil-provider -d --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider:latest
+          for i in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:4416 >/dev/null 2>&1 && break
+            sleep 1
+          done
+          yt-dlp --version
+          mkdir -p sources meta review
+
+      - name: Download exact real gameplay videos
+        shell: bash
+        run: |
+          set +e
+          download_one() {
+            id="$1"; name="$2"; section="${3:-*0-180}"
+            echo "===== $name / $id =====" | tee -a meta/download.log
+            yt-dlp \
+              --extractor-args 'youtube:player_client=mweb' \
+              --js-runtimes node \
+              --download-sections "$section" \
+              --force-keyframes-at-cuts \
+              -f 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/best' \
+              --merge-output-format mp4 \
+              --write-info-json \
+              --no-playlist \
+              -o "sources/${name}_[%(id)s].%(ext)s" \
+              "https://www.youtube.com/watch?v=$id" >>meta/download.log 2>&1
+            rc=$?
+            if [ $rc -ne 0 ]; then echo "FAIL $name $id" | tee -a meta/download.log; fi
+            return 0
+          }
+
+          # Hoarfrost Stomp: pre-nerf action/boss demonstrations.
+          download_one vcH2-rL8ya4 hoarfrost_boss '*0-120'
+          download_one gXoEiA36bvM hoarfrost_before_after '*0-120'
+          download_one FpT0eRAStuQ hoarfrost_compare '*0-120'
+
+          # Mimic Tear: summon creation and boss/Malenia demonstrations.
+          download_one ZlmtbD_8SiU mimic_summon_location '*0-180'
+          download_one FzYMhoFu__A mimic_gameplay '*0-150'
+          download_one RLlz3amNlpo mimic_boss '*0-150'
+          download_one 0qKN2J-uoJI mimic_malenia_prepost '*0-150'
+          download_one naANQ9xjFfk mimic_solo_malenia '*0-150'
+
+          # Let Me Solo Her: original real in-game videos from the creator.
+          download_one IqN2phpMWno lmsh_original '*0-180'
+          download_one HoSRJJ4Popk lmsh_everyday '*0-180'
+
+          # Volcano Manor ~50-hit wall: launch-era real gameplay.
+          download_one tIqoZ4ztDQE wall_50hit '*0-120'
+          download_one k-ffeG4S4as wall_50hit_alt '*0-120'
+          download_one oiO2minRm7c wall_50hit_short '*0-60'
+
+          # Official game footage for opening / transitions only.
+          curl -fsSL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o sources/official_gameplay.mp4 || true
+          curl -fsSL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o sources/official_launch.mp4 || true
+
+          find sources -maxdepth 1 -type f -name '*.mp4' -printf '%f|%s\n' | sort | tee meta/files.txt
+          echo "MP4_COUNT=$(find sources -maxdepth 1 -type f -name '*.mp4' | wc -l)" | tee meta/count.txt
+
+      - name: Build contact sheet from actual frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,subprocess,json,re
+          from PIL import Image,ImageDraw,ImageFont
+          S=pathlib.Path('sources');R=pathlib.Path('review');M=pathlib.Path('meta')
+          R.mkdir(exist_ok=True)
+          rows=[]
+          for f in sorted(S.glob('*.mp4')):
+            try:
+              d=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(f)]).decode().strip())
+            except: d=8
+            times=(max(.2,d*.12),max(.5,d*.50),max(.8,d*.82))
+            fs=[]
+            for j,t in enumerate(times,1):
+              p=R/f'{f.stem}_{j}.jpg'
+              subprocess.run(['ffmpeg','-y','-loglevel','error','-ss',str(t),'-i',str(f),'-frames:v','1','-vf','scale=430:-2',str(p)])
+              if p.exists():fs.append(p)
+            rows.append((f,fs))
+          font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',17)
+          rh=255;W=1390;sheet=Image.new('RGB',(W,max(rh,len(rows)*rh)),(245,245,245));dr=ImageDraw.Draw(sheet);y=0
+          for f,fs in rows:
+            dr.rectangle((0,y,W,y+rh-2),fill='white',outline=(210,210,210));dr.text((8,y+6),f.name[:105],font=font,fill='black');x=8
+            for p in fs:
+              im=Image.open(p).convert('RGB');im.thumbnail((440,205));sheet.paste(im,(x,y+38));x+=455
+            y+=rh
+          sheet.save(R/'CONTACT_SHEET.jpg',quality=90)
+          M.joinpath('audit.json').write_text(json.dumps({'videos':len(rows),'files':[f.name for f,_ in rows]},indent=2),encoding='utf-8')
+          if len(rows)<8: raise SystemExit(f'Too few real video files: {len(rows)}')
+          PY
+
+      - name: Upload real gameplay source pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-real-gameplay-sources
+          path: |
+            sources/
+            meta/
+            review/CONTACT_SHEET.jpg
+          compression-level: 0
+          retention-days: 7

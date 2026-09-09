@@ -1,0 +1,107 @@
+name: Elden Ring gameplay collector
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-cjk python3-pip
+          python3 -m pip install -q pillow requests
+          mkdir -p out meta review
+      - name: Collect actual gameplay
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,re,html,urllib.parse,urllib.request,subprocess,pathlib,traceback
+          from PIL import Image,ImageDraw,ImageFont
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36'
+          O=pathlib.Path('out');M=pathlib.Path('meta');R=pathlib.Path('review')
+          cats={
+          'hoarfrost':(['艾尔登法环 霜踏 boss 2022','艾尔登法环 老寒腿 霜踏','Elden Ring Hoarfrost Stomp boss'],['霜踏','老寒腿','hoarfrost']),
+          'mimic':(['艾尔登法环 仿身泪滴 boss 2022','艾尔登法环 仿身泪滴 玛莲妮亚','Elden Ring Mimic Tear Malenia'],['仿身','泪滴','mimic']),
+          'lmsh':(['艾尔登法环 壶头哥 玛莲妮亚 2022','Let Me Solo Her Malenia Elden Ring','艾尔登法环 Let Me Solo Her'],['壶头','let me solo','solo her','malenia','玛莲妮亚']),
+          'wall':(['艾尔登法环 50刀 隐藏墙 火山官邸','艾尔登法环 50次 墙 火山官邸','Elden Ring 50 hit wall Volcano Manor'],['50','隐藏墙','火山官邸','wall','illusory'])}
+          def gj(url):
+            req=urllib.request.Request(url,headers={'User-Agent':UA,'Referer':'https://www.bilibili.com/'})
+            with urllib.request.urlopen(req,timeout=25) as r:return json.loads(r.read().decode('utf-8','replace'))
+          def clean(s):return re.sub(r'\s+',' ',html.unescape(re.sub('<[^>]+>','',s or ''))).strip()
+          def ds(s):
+            try:
+              p=[int(x) for x in str(s).split(':')]
+              return p[-1]+60*p[-2]+(3600*p[-3] if len(p)>2 else 0)
+            except:return 99999
+          def safe(s):return re.sub(r'[^0-9A-Za-z._-]+','_',s)[:36]
+          allmeta=[]
+          for cat,(queries,keys) in cats.items():
+            pool={}
+            for q in queries:
+              for pg in (1,2,3):
+                try:data=gj('https://api.bilibili.com/x/web-interface/search/type?search_type=video&page=%d&keyword=%s'%(pg,urllib.parse.quote(q)))
+                except Exception as e:print('SEARCH_FAIL',cat,q,pg,e);continue
+                for r in ((data.get('data')or{}).get('result')or[]):
+                  b=r.get('bvid');title=clean(r.get('title'));dur=ds(r.get('duration'));pub=int(r.get('pubdate')or 0)
+                  if not b or dur<5 or dur>720:continue
+                  score=sum(10 for k in keys if k.lower() in title.lower())+(6 if 1640995200<=pub<=1672531199 else 0)+(4 if dur<180 else 0)
+                  row=(score,dur,b,title,pub,q)
+                  if b not in pool or score>pool[b][0]:pool[b]=row
+            picks=sorted(pool.values(),key=lambda x:(-x[0],x[1]))[:8]
+            print('PICKS',cat,[(x[0],x[1],x[2],x[3]) for x in picks])
+            good=0
+            for score,dur,b,title,pub,q in picks:
+              try:
+                v=gj('https://api.bilibili.com/x/web-interface/view?bvid='+b);cid=((v.get('data')or{}).get('pages')or[])[0]['cid']
+                p=gj(f'https://api.bilibili.com/x/player/playurl?bvid={b}&cid={cid}&qn=64&fnver=0&fnval=0&fourk=0');u=((p.get('data')or{}).get('durl')or[])[0]['url']
+                tmp=O/f'tmp_{b}.flv';final=O/f'{cat}_{good+1:02d}_{b}_{safe(title)}.mp4'
+                subprocess.run(['curl','-fsSL','--retry','3','-A',UA,'-e',f'https://www.bilibili.com/video/{b}/',u,'-o',str(tmp)],check=True)
+                subprocess.run(['ffmpeg','-y','-loglevel','error','-i',str(tmp),'-t','100','-an','-vf','scale=960:-2','-c:v','libx264','-preset','veryfast','-crf','22','-movflags','+faststart',str(final)],check=True)
+                tmp.unlink(missing_ok=True);good+=1
+                allmeta.append({'category':cat,'bvid':b,'title':title,'file':final.name,'score':score,'source':f'https://www.bilibili.com/video/{b}/'})
+                print('OK',cat,b,title,final.stat().st_size)
+                if good>=4:break
+              except Exception as e:print('DL_FAIL',cat,b,title,repr(e));traceback.print_exc()
+          # Official in-game trailer footage for intro only
+          for name,u in [('official_gameplay.mp4','https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4'),('official_launch.mp4','https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4')]:
+            try:
+              subprocess.run(['curl','-fsSL','--retry','3',u,'-o',str(O/name)],check=True);allmeta.append({'category':'official','file':name,'source':u})
+            except Exception as e:print('OFFICIAL_FAIL',name,e)
+          M.joinpath('assets.json').write_text(json.dumps(allmeta,ensure_ascii=False,indent=2),encoding='utf-8')
+          counts={c:sum(1 for x in allmeta if x['category']==c) for c in list(cats)+['official']};M.joinpath('counts.json').write_text(json.dumps(counts,indent=2));print('COUNTS',counts)
+          # Visual audit contact sheet: 3 frames per clip
+          rows=[]
+          for it in allmeta:
+            f=O/it['file'];
+            if not f.exists():continue
+            try:d=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(f)]).decode())
+            except:d=8
+            fs=[]
+            for j,t in enumerate((max(.2,d*.12),max(.5,d*.50),max(.8,d*.82)),1):
+              p=R/f'{f.stem}_{j}.jpg';subprocess.run(['ffmpeg','-y','-loglevel','error','-ss',str(t),'-i',str(f),'-frames:v','1','-vf','scale=430:-2',str(p)])
+              if p.exists():fs.append(p)
+            rows.append((it,fs))
+          font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',17);rh=255;W=1390;sheet=Image.new('RGB',(W,max(rh,len(rows)*rh)),(245,245,245));dr=ImageDraw.Draw(sheet);y=0
+          for it,fs in rows:
+            dr.rectangle((0,y,W,y+rh-2),fill='white',outline=(210,210,210));dr.text((8,y+6),f"{it['category']} | {it.get('bvid','official')} | {it.get('title',it['file'])}"[:100],font=font,fill='black');x=8
+            for p in fs:
+              im=Image.open(p).convert('RGB');im.thumbnail((440,205));sheet.paste(im,(x,y+38));x+=455
+            y+=rh
+          sheet.save(R/'CONTACT_SHEET.jpg',quality=88)
+          if any(counts[c]<3 for c in ['hoarfrost','mimic','lmsh','wall']):raise SystemExit('not enough matching gameplay '+str(counts))
+          PY
+      - name: Upload gameplay pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-gameplay-real-only
+          path: |
+            out/
+            meta/
+            review/CONTACT_SHEET.jpg
+          compression-level: 0
+          retention-days: 7

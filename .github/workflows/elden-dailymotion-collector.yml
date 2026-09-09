@@ -1,0 +1,111 @@
+name: Elden Ring Dailymotion gameplay collector
+
+on:
+  push:
+    branches: [chatgpt/elden-runner]
+  workflow_dispatch:
+
+jobs:
+  collect-dm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq curl python3
+      - name: Start Cobalt
+        run: |
+          docker run -d --name cobalt -p 9000:9000 -e API_URL=http://127.0.0.1:9000/ ghcr.io/imputnet/cobalt:11
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:9000/ && break || sleep 2; done
+      - name: Search Dailymotion and download gameplay
+        shell: bash
+        run: |
+          set -u
+          mkdir -p raw normalized meta audit/frames
+          : > meta/results.tsv
+
+          dm_search() {
+            topic="$1"; query="$2"
+            enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$query")
+            curl -fsSL "https://api.dailymotion.com/videos?search=${enc}&fields=id,title,url,duration,created_time&limit=20" -o "meta/${topic}_search.json" || true
+            jq -r '.list[]? | [.id,.title,.url,.duration] | @tsv' "meta/${topic}_search.json" || true
+          }
+
+          dm_search hoarfrost 'Elden Ring Hoarfrost Stomp'
+          dm_search hoarfrost_fr 'Elden Ring stomp givre'
+          dm_search mimic 'Elden Ring Mimic Tear'
+          dm_search lmsh 'Elden Ring Let Me Solo Her Malenia'
+          dm_search lmsh_fr 'La rencontre Let Me Solo Her'
+          dm_search wall 'Elden Ring 50 hit wall Volcano Manor'
+
+          # Seed exact known Dailymotion gameplay/report videos discovered independently.
+          cat > meta/seeds.tsv <<'EOF'
+          wall_seed	x896ans	Elden Ring : Le passage secret qui demande 50 coups existe vraiment
+          mimic_seed	x896mal	Lágrima Imitadora em Elden Ring: onde achar o Mímico, como derrotar e o que faz
+          mimic_route	x894pl4	Follow This Path To Get The Mimic Tear
+          lmsh_gameplay_context	x9d0y5a	The 10 Most HILARIOUS Elden Ring Mods
+          EOF
+
+          cobalt_fetch() {
+            label="$1"; id="$2"; title="$3"
+            src="https://www.dailymotion.com/video/${id}"
+            payload=$(jq -nc --arg u "$src" '{url:$u,downloadMode:"mute",videoQuality:"720",videoContainer:"mp4",alwaysProxy:true,disableMetadata:true}')
+            resp=$(curl -sS --max-time 90 -X POST http://127.0.0.1:9000/ -H 'Accept: application/json' -H 'Content-Type: application/json' -d "$payload" || true)
+            echo "$resp" > "meta/${label}_${id}_response.json"
+            status=$(echo "$resp" | jq -r '.status // ""' 2>/dev/null)
+            dl=$(echo "$resp" | jq -r 'if .status=="tunnel" or .status=="redirect" then .url elif .status=="picker" then ([.picker[] | select(.type=="video")][0].url // "") else "" end' 2>/dev/null)
+            if [[ -z "$dl" ]]; then printf '%s\tFAIL\t%s\t%s\t%s\n' "$label" "$id" "$title" "$status" >> meta/results.tsv; return 1; fi
+            if ! curl -fL --retry 3 --max-time 240 "$dl" -o "raw/${label}_${id}.bin"; then printf '%s\tDOWNLOAD_FAIL\t%s\t%s\t%s\n' "$label" "$id" "$title" "$status" >> meta/results.tsv; return 1; fi
+            if ! ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "raw/${label}_${id}.bin" >/dev/null; then printf '%s\tPROBE_FAIL\t%s\t%s\t%s\n' "$label" "$id" "$title" "$status" >> meta/results.tsv; return 1; fi
+            ffmpeg -y -loglevel error -i "raw/${label}_${id}.bin" -t 180 -an -vf "scale='min(1280,iw)':-2,fps=30" -c:v libx264 -crf 20 -preset veryfast -pix_fmt yuv420p "normalized/${label}_${id}.mp4" || return 1
+            printf '%s\tOK\t%s\t%s\t%s\n' "$label" "$id" "$title" "$status" >> meta/results.tsv
+          }
+
+          while IFS=$'\t' read -r label id title; do cobalt_fetch "$label" "$id" "$title" || true; done < meta/seeds.tsv
+
+          for topic in hoarfrost hoarfrost_fr mimic lmsh lmsh_fr wall; do
+            file="meta/${topic}_search.json"; [ -s "$file" ] || continue
+            count=0
+            while IFS=$'\t' read -r id title; do
+              [ -n "$id" ] || continue
+              if cobalt_fetch "${topic}_${count}" "$id" "$title"; then count=$((count+1)); fi
+              [ "$count" -ge 3 ] && break
+            done < <(jq -r '.list[]? | [.id,.title] | @tsv' "$file")
+          done
+
+          # Official Steam gameplay provides clean launch-era filler footage.
+          curl -fL --retry 3 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o raw/official_gameplay.mp4 || true
+          curl -fL --retry 3 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o raw/official_launch.mp4 || true
+          for f in raw/official_*.mp4; do [ -s "$f" ] && cp "$f" "normalized/$(basename "$f")"; done
+          cat meta/results.tsv
+          find normalized -type f -printf '%f\t%s\n' | sort
+      - name: Build contact sheet
+        shell: bash
+        run: |
+          set -u
+          for f in normalized/*.mp4; do
+            [ -s "$f" ] || continue
+            b=$(basename "$f" .mp4)
+            d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f" || echo 5)
+            for frac in 0.08 0.25 0.50 0.75 0.92; do
+              t=$(python3 -c 'import sys; print(max(.05,float(sys.argv[1])*float(sys.argv[2])))' "$d" "$frac")
+              n=${frac/./_}
+              ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "audit/frames/${b}_${n}.jpg" || true
+            done
+          done
+          if compgen -G 'audit/frames/*.jpg' >/dev/null; then
+            ffmpeg -y -loglevel error -pattern_type glob -i 'audit/frames/*.jpg' -vf 'scale=320:-2,tile=5x30:padding=4:margin=4' -frames:v 1 audit/contact_sheet.jpg || true
+          fi
+      - name: Upload gameplay pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-dailymotion-real-gameplay
+          path: |
+            normalized/
+            meta/
+            audit/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

@@ -1,0 +1,141 @@
+name: Elden Ring Cobalt gameplay collector
+
+on:
+  push:
+    branches: [chatgpt/elden-runner]
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq curl python3-pip fonts-noto-cjk
+          python3 -m pip install --break-system-packages -U yt-dlp
+
+      - name: Start local Cobalt with YouTube session generator
+        run: |
+          set -eux
+          docker network create cobalt-net || true
+          docker run -d --name yt-session --network cobalt-net ghcr.io/imputnet/yt-session-generator:webserver
+          docker run -d --name cobalt --network cobalt-net -p 9000:9000 \
+            -e API_URL=http://127.0.0.1:9000/ \
+            -e YOUTUBE_SESSION_SERVER=http://yt-session:8080 \
+            ghcr.io/imputnet/cobalt:11
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9000/ > cobalt-info.json; then break; fi
+            sleep 2
+          done
+          cat cobalt-info.json
+          curl -fsS http://127.0.0.1:8080/token || true
+          docker logs --tail 60 cobalt || true
+
+      - name: Resolve and download real gameplay
+        shell: bash
+        run: |
+          set -u
+          mkdir -p raw normalized audit meta
+          : > meta/results.tsv
+
+          cobalt_fetch() {
+            label="$1"; src="$2"
+            echo "===== COBALT $label $src ====="
+            payload=$(jq -nc --arg u "$src" '{url:$u,downloadMode:"mute",videoQuality:"720",youtubeVideoCodec:"h264",youtubeVideoContainer:"mp4",alwaysProxy:true,localProcessing:"disabled",disableMetadata:true}')
+            resp=$(curl -sS --max-time 90 -X POST http://127.0.0.1:9000/ -H 'Accept: application/json' -H 'Content-Type: application/json' -d "$payload" || true)
+            echo "$resp" | tee "meta/${label}_response.json"
+            status=$(echo "$resp" | jq -r '.status // ""' 2>/dev/null)
+            dl=""
+            if [[ "$status" == "tunnel" || "$status" == "redirect" ]]; then
+              dl=$(echo "$resp" | jq -r '.url // empty')
+            elif [[ "$status" == "local-processing" ]]; then
+              dl=$(echo "$resp" | jq -r '.tunnel[0] // empty')
+            elif [[ "$status" == "picker" ]]; then
+              dl=$(echo "$resp" | jq -r '[.picker[] | select(.type=="video")][0].url // empty')
+            fi
+            if [[ -z "$dl" ]]; then
+              printf '%s\tFAIL\t%s\t%s\n' "$label" "$src" "$status" >> meta/results.tsv
+              return 1
+            fi
+            if ! curl -fL --retry 3 --retry-delay 2 --max-time 240 "$dl" -o "raw/${label}.bin"; then
+              printf '%s\tDOWNLOAD_FAIL\t%s\t%s\n' "$label" "$src" "$status" >> meta/results.tsv
+              return 1
+            fi
+            if ! ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of json "raw/${label}.bin" > "meta/${label}_probe.json"; then
+              printf '%s\tPROBE_FAIL\t%s\t%s\n' "$label" "$src" "$status" >> meta/results.tsv
+              return 1
+            fi
+            ffmpeg -y -loglevel error -i "raw/${label}.bin" -t 100 -an -vf "scale='min(1280,iw)':-2,fps=30" -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p "normalized/${label}.mp4" || return 1
+            printf '%s\tOK\t%s\t%s\n' "$label" "$src" "$status" >> meta/results.tsv
+            return 0
+          }
+
+          # Exact known real-gameplay uploads first.
+          cobalt_fetch mimic_exact 'https://www.youtube.com/watch?v=0qKN2J-uoJI' || true
+          cobalt_fetch lmsh_exact 'https://www.youtube.com/watch?v=IqN2phpMWno' || true
+          cobalt_fetch wall_exact 'https://www.youtube.com/shorts/oiO2minRm7c' || true
+
+          search_and_fetch() {
+            prefix="$1"; query="$2"; need="$3"
+            yt-dlp --flat-playlist --playlist-end 10 --print '%(id)s|%(title)s' "ytsearch10:${query}" > "meta/${prefix}_search.txt" 2>&1 || true
+            cat "meta/${prefix}_search.txt"
+            count=0
+            while IFS='|' read -r id title; do
+              [[ "$id" =~ ^[A-Za-z0-9_-]{11}$ ]] || continue
+              safe="${prefix}_${count}"
+              if cobalt_fetch "$safe" "https://www.youtube.com/watch?v=${id}"; then
+                echo "$id|$title" >> "meta/${prefix}_accepted.txt"
+                count=$((count+1))
+                [[ "$count" -ge "$need" ]] && break
+              fi
+            done < "meta/${prefix}_search.txt"
+          }
+
+          search_and_fetch hoarfrost 'Elden Ring Hoarfrost Stomp overpowered gameplay boss' 3
+          search_and_fetch mimic 'Elden Ring Mimic Tear summon boss gameplay' 2
+          search_and_fetch lmsh 'Let Me Solo Her Malenia fight gameplay Elden Ring' 2
+          search_and_fetch wall 'Elden Ring 50 hit wall Volcano Manor gameplay' 2
+
+          cat meta/results.tsv
+          find normalized -type f -name '*.mp4' -printf '%f %s bytes\n' | sort
+
+      - name: Build audit sheets
+        run: |
+          set -eux
+          mkdir -p audit/frames
+          for f in normalized/*.mp4; do
+            [ -e "$f" ] || continue
+            b=$(basename "$f" .mp4)
+            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+            python3 - "$dur" > /tmp/times.txt <<'PY'
+          import sys
+          d=max(float(sys.argv[1]),1.0)
+          print(' '.join(str(max(0.1,d*x)) for x in (0.08,0.25,0.5,0.75,0.92)))
+          PY
+            i=0
+            for t in $(cat /tmp/times.txt); do
+              ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf "scale=320:-2" "audit/frames/${b}_${i}.jpg" || true
+              i=$((i+1))
+            done
+          done
+          if compgen -G 'audit/frames/*.jpg' > /dev/null; then
+            ffmpeg -y -loglevel error -pattern_type glob -i 'audit/frames/*.jpg' -vf "scale=320:-2,tile=5x20:padding=4:margin=4" -frames:v 1 audit/contact_sheet.jpg || true
+          fi
+
+      - name: Upload gameplay collection
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-cobalt-real-gameplay
+          path: |
+            normalized/
+            audit/
+            meta/
+            cobalt-info.json
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
