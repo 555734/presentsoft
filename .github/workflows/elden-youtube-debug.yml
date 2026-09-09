@@ -1,0 +1,69 @@
+name: Elden Ring YouTube extraction debug
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install current yt-dlp stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python3 -m pip install --break-system-packages -U yt-dlp bgutil-ytdlp-pot-provider yt-dlp-ejs
+          docker pull brainicism/bgutil-ytdlp-pot-provider:latest
+          docker run --name bgutil-provider -d --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider:latest
+          sleep 5
+          docker logs bgutil-provider || true
+          yt-dlp --version
+          mkdir -p debug out
+      - name: Probe exact real gameplay with several clients
+        shell: bash
+        run: |
+          set +e
+          ID='IqN2phpMWno'
+          for CLIENT in mweb web web_safari tv tv_embedded; do
+            echo "================ CLIENT=$CLIENT ================" | tee -a debug/probe.log
+            yt-dlp -v --simulate --js-runtimes node --extractor-args "youtube:player_client=$CLIENT" "https://www.youtube.com/watch?v=$ID" 2>&1 | tee -a debug/probe.log
+            echo "RC=${PIPESTATUS[0]}" | tee -a debug/probe.log
+          done
+          echo '================ DEFAULT CLIENTS ================' | tee -a debug/probe.log
+          yt-dlp -v --simulate --js-runtimes node "https://www.youtube.com/watch?v=$ID" 2>&1 | tee -a debug/probe.log
+          echo "RC=${PIPESTATUS[0]}" | tee -a debug/probe.log
+          exit 0
+      - name: Try exact download using any working format
+        shell: bash
+        run: |
+          set +e
+          yt-dlp -v --js-runtimes node \
+            --extractor-args 'youtube:player_client=web,web_safari,tv,mweb' \
+            --download-sections '*0-30' --force-keyframes-at-cuts \
+            -f 'bestvideo[height<=720]+bestaudio/best[height<=720]/best' \
+            --merge-output-format mp4 \
+            -o 'out/lmsh.%(ext)s' \
+            'https://www.youtube.com/watch?v=IqN2phpMWno' 2>&1 | tee debug/download.log
+          exit 0
+      - name: Show diagnostic
+        if: always()
+        run: |
+          echo '--- PROBE TAIL ---'
+          tail -240 debug/probe.log || true
+          echo '--- DOWNLOAD ---'
+          cat debug/download.log || true
+          ls -lah out || true
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elden-youtube-debug
+          path: |
+            debug/
+            out/
+          retention-days: 3
