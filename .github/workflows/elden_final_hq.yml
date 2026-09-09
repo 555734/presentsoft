@@ -1,0 +1,194 @@
+name: Elden Final HQ
+on:
+  push:
+    branches: [chatgpt/elden-runner]
+    paths:
+      - '.github/workflows/elden_final_hq.yml'
+      - 'elden_final_trigger.txt'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq curl fonts-noto-cjk python3
+
+      - name: Start YouTube session and Cobalt correctly
+        run: |
+          set -eux
+          docker network create cobalt-net
+          docker run -d --name yt-session --network cobalt-net ghcr.io/imputnet/yt-session-generator:webserver
+          for i in $(seq 1 90); do
+            if docker run --rm --network cobalt-net curlimages/curl:8.12.1 -fsS http://yt-session:8080/token >/tmp/yt_token.json 2>/dev/null; then
+              test -s /tmp/yt_token.json && break
+            fi
+            sleep 2
+          done
+          cat /tmp/yt_token.json
+          docker run -d --name cobalt --network cobalt-net -p 9000:9000 \
+            -e API_URL=http://127.0.0.1:9000/ \
+            -e YOUTUBE_SESSION_SERVER=http://yt-session:8080 \
+            ghcr.io/imputnet/cobalt:11
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:9000/ >/tmp/cobalt.json && break || sleep 2; done
+          cat /tmp/cobalt.json
+
+      - name: Download 1080p real gameplay
+        run: |
+          set -u
+          mkdir -p assets meta audit
+          fetch() {
+            label="$1"; url="$2"
+            payload=$(jq -nc --arg u "$url" '{url:$u,downloadMode:"mute",videoQuality:"1080",youtubeVideoCodec:"h264",youtubeVideoContainer:"mp4",alwaysProxy:true,disableMetadata:true}')
+            resp=$(curl -sS --max-time 120 -X POST http://127.0.0.1:9000/ -H 'Accept: application/json' -H 'Content-Type: application/json' -d "$payload" || true)
+            echo "$resp" > "meta/${label}.json"
+            status=$(echo "$resp" | jq -r '.status // ""' 2>/dev/null)
+            dl=$(echo "$resp" | jq -r 'if .status=="tunnel" or .status=="redirect" then .url elif .status=="picker" then ([.picker[] | select(.type=="video")][0].url // "") elif .status=="local-processing" then (.tunnel[0] // "") else "" end' 2>/dev/null)
+            if [ -z "$dl" ]; then echo "FAIL $label $status"; return 1; fi
+            curl -fL --retry 4 --retry-delay 2 --max-time 300 "$dl" -o "assets/${label}.bin" || return 1
+            ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "assets/${label}.bin" > "meta/${label}_probe.json" || return 1
+            ffmpeg -y -loglevel error -i "assets/${label}.bin" -an -vf "scale='min(1920,iw)':-2" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "assets/${label}.mp4" || return 1
+            rm -f "assets/${label}.bin"
+            echo "OK $label"
+          }
+
+          # Hoarfrost Stomp actual gameplay
+          fetch hoarfrost_a 'https://www.youtube.com/watch?v=QmHaTKNbVZ4' || true
+          fetch hoarfrost_b 'https://www.youtube.com/watch?v=Ul7WYPGScjc' || true
+          fetch hoarfrost_c 'https://www.youtube.com/watch?v=HMXSuYYXUXE' || true
+          # Mimic Tear actual summon/boss gameplay
+          fetch mimic_a 'https://www.youtube.com/watch?v=f6VB0oxVmXA' || true
+          fetch mimic_b 'https://www.youtube.com/watch?v=1NPbxONMdxM' || true
+          fetch mimic_c 'https://www.youtube.com/watch?v=0qKN2J-uoJI' || true
+          # Let Me Solo Her / Malenia actual gameplay, prefer 1440p mirror then known fight uploads
+          fetch lmsh_a 'https://www.youtube.com/watch?v=1cE-2nFhKpo' || true
+          fetch lmsh_b 'https://www.youtube.com/watch?v=QKUlaYOaAAM' || true
+          fetch lmsh_c 'https://www.youtube.com/watch?v=IqN2phpMWno' || true
+          # 50-hit Volcano Manor wall actual gameplay
+          fetch wall_a 'https://www.youtube.com/watch?v=i-bAE7axvVE' || true
+          fetch wall_b 'https://www.youtube.com/watch?v=4t52LiFq85I' || true
+          fetch wall_c 'https://www.youtube.com/watch?v=1kyHFATAS3I' || true
+
+          # Clean official launch gameplay filler only
+          curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o assets/official_a.mp4
+          curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o assets/official_b.mp4
+
+          for p in hoarfrost mimic lmsh wall; do
+            n=$(find assets -maxdepth 1 -name "${p}_*.mp4" | wc -l)
+            echo "$p count=$n"
+            test "$n" -ge 2
+          done
+
+      - name: Build visual audit sheet
+        run: |
+          mkdir -p audit/frames
+          for f in assets/*.mp4; do
+            b=$(basename "$f" .mp4)
+            d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f" || echo 10)
+            for frac in .12 .33 .55 .77; do
+              t=$(python3 -c 'import sys; print(max(.1,float(sys.argv[1])*float(sys.argv[2])))' "$d" "$frac")
+              ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "audit/frames/${b}_${frac}.jpg" || true
+            done
+          done
+          ffmpeg -y -loglevel error -pattern_type glob -i 'audit/frames/*.jpg' -vf 'scale=320:-2,tile=4x20:padding=4:margin=4' -frames:v 1 audit/contact_sheet.jpg
+
+      - name: Start VOICEVOX Engine
+        run: |
+          docker run -d --name voicevox -p 50021:50021 voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+          for i in $(seq 1 120); do curl -fsS http://127.0.0.1:50021/version && break || sleep 2; done
+          curl -fsS http://127.0.0.1:50021/speakers > meta/voicevox_speakers.json
+          jq '.[] | select(.name=="四国めたん")' meta/voicevox_speakers.json
+
+      - name: Generate Shikoku Metan narration
+        run: |
+          mkdir -p audio
+          python3 - <<'PY'
+          import json, subprocess, urllib.parse, urllib.request, os
+          lines = [
+            ('intro','エルデンリング、発売初期の狂気がヤバい。2022年、世界中で大ヒットしたこのゲームですが、初期環境は本当にめちゃくちゃでした。'),
+            ('hoarfrost','まず猛威を振るったのが戦技、霜踏み。地面を踏むだけで広範囲に大ダメージ。強敵までみるみる溶けて、発売直後は足をバタバタ踏む褪せ人が大量発生しました。'),
+            ('mimic','さらに写し身の雫。自分とほぼ同じ装備の分身を呼べるため、本人が後ろで見ている間に、分身だけでボスを倒してしまう光景まで普通に発生。'),
+            ('lmsh','そしてマレニア前に現れた伝説が、レット・ミー・ソロ・ハー。壺をかぶったほぼ裸の姿で、他人の世界のマレニアを何度も一人で撃破。世界的な英雄になり、後にはバンダイナムコから記念品として実物の剣まで贈られました。'),
+            ('wall','極めつけは、ボルケーノ火山館で見つかった異常に硬い隠し壁。普通の壁なら一撃なのに、これは何十回も殴ると消える。嘘メッセージを疑っていた褪せ人たちに、本当に壁を殴り続ける理由が生まれてしまいました。ちなみにこれはアップデートで追加された壁ではなく、発売初期から存在し、後のパッチで修正されています。')
+          ]
+          for key,text in lines:
+              qurl='http://127.0.0.1:50021/audio_query?'+urllib.parse.urlencode({'text':text,'speaker':2})
+              req=urllib.request.Request(qurl, method='POST')
+              query=json.load(urllib.request.urlopen(req))
+              query['speedScale']=1.27
+              query['intonationScale']=1.05
+              query['volumeScale']=1.0
+              data=json.dumps(query,ensure_ascii=False).encode()
+              req=urllib.request.Request('http://127.0.0.1:50021/synthesis?speaker=2',data=data,headers={'Content-Type':'application/json'},method='POST')
+              wav=urllib.request.urlopen(req).read()
+              open(f'audio/{key}.wav','wb').write(wav)
+          PY
+          for f in audio/*.wav; do ffprobe -v error -show_entries format=duration -of csv=p=0 "$f"; done
+
+      - name: Render final short
+        run: |
+          cat > /tmp/render.py <<'PY'
+          import os, subprocess, glob, shlex
+          font='/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+          sections=[
+            ('intro','エルデンリング発売初期の狂気','2022年 初期環境がヤバすぎた','official'),
+            ('hoarfrost','戦技「霜踏み」が猛威','踏むだけでボスが溶ける','hoarfrost'),
+            ('mimic','写し身の雫が強すぎる','本人より分身が働く','mimic'),
+            ('lmsh','伝説「Let Me Solo Her」','壺頭ほぼ全裸でマレニアを撃破','lmsh'),
+            ('wall','何十回も殴ると消える壁','発売初期から存在 → 後に修正','wall'),
+          ]
+          os.makedirs('render',exist_ok=True)
+          def dur(path):
+            return float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',path],text=True).strip())
+          for key,top,bottom,prefix in sections:
+            ad=dur(f'audio/{key}.wav')
+            clips=sorted(glob.glob(f'assets/{prefix}_*.mp4')) if prefix!='official' else sorted(glob.glob('assets/official_*.mp4'))
+            if not clips: raise SystemExit(f'no clips {key}')
+            chunk=1.65
+            parts=[]; t=0; idx=0
+            while t < ad-0.01:
+              length=min(chunk,ad-t)
+              clip=clips[idx%len(clips)]
+              cd=dur(clip)
+              # choose changing offsets, avoiding first/last extremes
+              off=max(0.0, min(max(0.0,cd-length-.2), ((idx*7.3)%(max(cd-length-1,1)))+.5))
+              out=f'render/{key}_{idx:02d}.mp4'
+              vf=(f"scale=360:370:force_original_aspect_ratio=increase,crop=360:370,")
+              subprocess.run(['ffmpeg','-y','-loglevel','error','-ss',str(off),'-i',clip,'-t',str(length),'-vf',vf,'-an','-r','30','-c:v','libx264','-preset','veryfast','-crf','18','-pix_fmt','yuv420p',out],check=True)
+              parts.append(out); t+=length; idx+=1
+            with open(f'render/{key}.txt','w') as f:
+              for p in parts: f.write(f"file '{os.path.abspath(p)}'\n")
+            center=f'render/{key}_center.mp4'
+            subprocess.run(['ffmpeg','-y','-loglevel','error','-f','concat','-safe','0','-i',f'render/{key}.txt','-t',str(ad),'-c:v','libx264','-preset','veryfast','-crf','18','-pix_fmt','yuv420p',center],check=True)
+            # white canvas + center gameplay + captions. escape drawtext text minimally
+            def esc(s): return s.replace('\\','\\\\').replace(':','\\:').replace("'","\\'")
+            vf=(f"color=c=white:s=360x640:r=30:d={ad}[bg];"
+                f"[1:v]setpts=PTS-STARTPTS[game];[bg][game]overlay=0:135:shortest=1[v];"
+                f"[v]drawtext=fontfile={font}:text='{esc(top)}':fontcolor=black:fontsize=29:borderw=0:x=(w-text_w)/2:y=28:box=0," 
+                f"drawtext=fontfile={font}:text='{esc(bottom)}':fontcolor=black:fontsize=25:borderw=0:x=(w-text_w)/2:y=535:box=0[outv]")
+            out=f'render/{key}_final.mp4'
+            subprocess.run(['ffmpeg','-y','-loglevel','error','-f','lavfi','-i',f'color=c=white:s=360x640:r=30:d={ad}','-i',center,'-i',f'audio/{key}.wav','-filter_complex',vf,'-map','[outv]','-map','2:a','-t',str(ad),'-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p','-c:a','aac','-b:a','160k',out],check=True)
+          with open('render/final.txt','w') as f:
+            for key,*_ in sections: f.write(f"file '{os.path.abspath('render/'+key+'_final.mp4')}'\n")
+          subprocess.run(['ffmpeg','-y','-loglevel','error','-f','concat','-safe','0','-i','render/final.txt','-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p','-c:a','aac','-b:a','160k','ELDEN_RING_launch_chaos_HQ_Metan.mp4'],check=True)
+          PY
+          python3 /tmp/render.py
+          ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height -of json ELDEN_RING_launch_chaos_HQ_Metan.mp4
+
+      - name: Upload final and audits
+        uses: actions/upload-artifact@v4
+        with:
+          name: ELDEN_RING_launch_chaos_HQ_Metan
+          path: |
+            ELDEN_RING_launch_chaos_HQ_Metan.mp4
+            audit/contact_sheet.jpg
+            meta/*_probe.json
+            meta/voicevox_speakers.json
+          compression-level: 0
+          retention-days: 14
