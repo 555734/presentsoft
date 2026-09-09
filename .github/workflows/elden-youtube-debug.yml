@@ -1,4 +1,4 @@
-name: Elden Ring YouTube extraction debug
+name: Elden Ring verified final assets
 
 on:
   pull_request:
@@ -7,63 +7,106 @@ on:
 
 jobs:
   debug:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Install current yt-dlp stack
+
+      - name: Install media tools
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq fonts-noto-cjk
+          python3 -m pip install --break-system-packages -U yt-dlp
+          mkdir -p pack/video pack/audio pack/audit
+
+      - name: Download real Elden Ring gameplay from Bilibili
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-          python3 -m pip install --break-system-packages -U yt-dlp bgutil-ytdlp-pot-provider yt-dlp-ejs
-          docker pull brainicism/bgutil-ytdlp-pot-provider:latest
-          docker run --name bgutil-provider -d --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider:latest
-          sleep 5
-          docker logs bgutil-provider || true
-          yt-dlp --version
-          mkdir -p debug out
-      - name: Probe exact real gameplay with several clients
+          fetch_bili() {
+            name="$1"; url="$2"; sec="$3"
+            echo "===== FETCH $name $url ====="
+            rm -f "pack/video/${name}."* "pack/video/${name}_norm.mp4" || true
+            yt-dlp --no-playlist \
+              --download-sections "*0-${sec}" --force-keyframes-at-cuts \
+              -f 'bv*[height<=480]+ba/b[height<=480]/b' \
+              --merge-output-format mp4 \
+              --retries 5 --fragment-retries 5 \
+              -o "pack/video/${name}.%(ext)s" "$url"
+            f=$(find pack/video -maxdepth 1 -type f -name "${name}.*" ! -name '*_norm.mp4' | head -1)
+            test -n "$f"
+            ffprobe -v error -show_entries format=duration:stream=width,height -of json "$f"
+            ffmpeg -y -loglevel error -i "$f" -an \
+              -vf "scale='min(854,iw)':-2,fps=30" \
+              -c:v libx264 -crf 20 -preset veryfast -pix_fmt yuv420p \
+              "pack/video/${name}_norm.mp4"
+            test -s "pack/video/${name}_norm.mp4"
+          }
+
+          fetch_bili hoarfrost 'https://www.bilibili.com/video/BV1m34y1k7g9/' 120
+          fetch_bili mimic 'https://www.bilibili.com/video/BV1Uq4y1v7He/' 120
+          fetch_bili lmsh 'https://www.bilibili.com/video/BV1cZ4y127Kd/' 120
+          fetch_bili wall50 'https://www.bilibili.com/video/BV1Fu411q768/' 90
+          find pack/video -type f -printf '%f|%s bytes\n' | sort
+
+      - name: Generate exact VOICEVOX Shikoku Metan narration
         shell: bash
         run: |
-          set +e
-          ID='IqN2phpMWno'
-          for CLIENT in mweb web web_safari tv tv_embedded; do
-            echo "================ CLIENT=$CLIENT ================" | tee -a debug/probe.log
-            yt-dlp -v --simulate --js-runtimes node --extractor-args "youtube:player_client=$CLIENT" "https://www.youtube.com/watch?v=$ID" 2>&1 | tee -a debug/probe.log
-            echo "RC=${PIPESTATUS[0]}" | tee -a debug/probe.log
+          set -euxo pipefail
+          docker pull voicevox/voicevox_engine:cpu-latest
+          docker run -d --name voicevox -p 127.0.0.1:50021:50021 voicevox/voicevox_engine:cpu-latest
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:50021/version > pack/audio/version.txt; then break; fi
+            sleep 2
           done
-          echo '================ DEFAULT CLIENTS ================' | tee -a debug/probe.log
-          yt-dlp -v --simulate --js-runtimes node "https://www.youtube.com/watch?v=$ID" 2>&1 | tee -a debug/probe.log
-          echo "RC=${PIPESTATUS[0]}" | tee -a debug/probe.log
-          exit 0
-      - name: Try exact download using any working format
+          curl -fsS http://127.0.0.1:50021/speakers > pack/audio/speakers.json
+          jq -r '.[] | select(.name=="四国めたん") | .name as $n | .styles[] | [$n,.name,.id] | @tsv' pack/audio/speakers.json | tee pack/audio/metan_styles.tsv
+          SPEAKER=$(jq -r '.[] | select(.name=="四国めたん") | .styles[] | select(.name=="ノーマル") | .id' pack/audio/speakers.json | head -1)
+          test -n "$SPEAKER"
+          echo "$SPEAKER" | tee pack/audio/speaker_id.txt
+
+          cat > pack/audio/script.txt <<'TXT'
+          エルデンリングの発売初期の狂気がヤバい。2022年に発売され、世界中で大ヒットした今作ですが、初期のゲーム環境はまさに狂気の沙汰でした。まず猛威を振るったのが戦技「霜踏み」。どんな強力なボスも、足をバタバタ踏み鳴らすだけであっさり溶けていくため、当時はフロム史上最強の足踏み状態。世界中で謎の足踏みラッシュが発生しました。さらに、自分とほぼ同じ分身を呼び出す「写し身の雫」に至っては、プレイヤー本人が後ろで見守る中、分身がボスをボコボコにするという主客転倒な事態が多発。作中最強クラスのボス「マレニア」の召喚サイン前には、頭に壺を被った裸同然の男「Let Me Solo Her」が現れ、ほぼノーダメージで倒し続け世界的な英雄に。後にはバンダイナムコから、記念品として本物の剣まで贈られました。極めつけは「この先、隠し道があるぞ」という嘘メッセージ。壁を叩き続ける褪せ人が続出する中、発売初期には本当に数十回叩くと消える異常な壁が火山館で発見。後のアップデートで修正されました。
+          TXT
+          ENC=$(python3 - <<'PY'
+          import urllib.parse
+          print(urllib.parse.quote(open('pack/audio/script.txt',encoding='utf-8').read().strip(), safe=''))
+          PY
+          )
+          curl -fsS -X POST "http://127.0.0.1:50021/audio_query?text=${ENC}&speaker=${SPEAKER}" > pack/audio/query_raw.json
+          jq '.speedScale=1.22 | .pitchScale=0 | .intonationScale=1.0 | .volumeScale=1.0 | .postPhonemeLength=0.08' pack/audio/query_raw.json > pack/audio/query.json
+          curl -fsS -H 'Content-Type: application/json' -X POST \
+            -d @pack/audio/query.json "http://127.0.0.1:50021/synthesis?speaker=${SPEAKER}" > pack/audio/metan.wav
+          ffprobe -v error -show_entries format=duration -of default=nw=1 pack/audio/metan.wav | tee pack/audio/duration.txt
+          test -s pack/audio/metan.wav
+
+      - name: Build visual audit sheets
         shell: bash
         run: |
-          set +e
-          yt-dlp -v --js-runtimes node \
-            --extractor-args 'youtube:player_client=web,web_safari,tv,mweb' \
-            --download-sections '*0-30' --force-keyframes-at-cuts \
-            -f 'bestvideo[height<=720]+bestaudio/best[height<=720]/best' \
-            --merge-output-format mp4 \
-            -o 'out/lmsh.%(ext)s' \
-            'https://www.youtube.com/watch?v=IqN2phpMWno' 2>&1 | tee debug/download.log
-          exit 0
-      - name: Show diagnostic
-        if: always()
-        run: |
-          echo '--- PROBE TAIL ---'
-          tail -240 debug/probe.log || true
-          echo '--- DOWNLOAD ---'
-          cat debug/download.log || true
-          ls -lah out || true
-      - name: Upload diagnostic
-        if: always()
+          set -euxo pipefail
+          for f in pack/video/*_norm.mp4; do
+            b=$(basename "$f" _norm.mp4)
+            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+            python3 - "$dur" > /tmp/times.txt <<'PY'
+          import sys
+          d=max(float(sys.argv[1]),1.0)
+          print(' '.join(f'{d*x:.3f}' for x in (0.05,0.15,0.25,0.35,0.45,0.55,0.65,0.75,0.85,0.95)))
+          PY
+            i=0
+            for t in $(cat /tmp/times.txt); do
+              ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "pack/audit/${b}_${i}.jpg" || true
+              i=$((i+1))
+            done
+          done
+          ffmpeg -y -loglevel error -pattern_type glob -i 'pack/audit/*.jpg' \
+            -vf 'scale=320:-2,tile=5x8:padding=4:margin=4' -frames:v 1 pack/audit/contact_sheet.jpg
+          test -s pack/audit/contact_sheet.jpg
+
+      - name: Upload verified final assets
         uses: actions/upload-artifact@v4
         with:
-          name: elden-youtube-debug
-          path: |
-            debug/
-            out/
-          retention-days: 3
+          name: elden-verified-real-assets
+          path: pack/
+          compression-level: 0
+          retention-days: 7
