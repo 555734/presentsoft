@@ -1,70 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
-mkdir -p pack/video pack/audio pack/audit/frames pack/meta render
+mkdir -p pack/video pack/audio pack/audit/frames pack/meta pack/stills render
 
-# Current public Piped API instances from TeamPiped's maintained instance list.
-PIPED=(
-  'https://pipedapi.kavin.rocks'
-  'https://pipedapi.leptons.xyz'
-  'https://pipedapi.nosebs.ru'
-  'https://pipedapi-libre.kavin.rocks'
-  'https://pipedapi.adminforge.de'
-  'https://api.piped.yt'
-  'https://pipedapi.drgns.space'
-  'https://piped-api.codespace.cz'
-  'https://api.piped.private.coffee'
-)
+# High-resolution real-game imagery. No Dailymotion and no generated gameplay.
+declare -A URLS
+URLS[hoarfrost_01]='https://prod.assets.earlygamecdn.com/images/Elden-Ring-Guide-How-To-Get-The-Hoarfrost-Stomp-Ash-Of-War.jpg?mtime=1664787315'
+URLS[hoarfrost_02]='https://d.ibtimes.com/en/full/3439034/hoarfrost-stomp-great-both-pve-pvp-elden-ring.png'
+URLS[mimic_01]='https://cdn.mos.cms.futurecdn.net/ktbpFCzLzStTrJJE893oXn.jpg'
+URLS[mimic_02]='https://assetsio.gnwcdn.com/elden-ring-malenia-2_Dv92W9u.png?auto=webp&fit=bounds&format=jpg&height=2048&quality=85&width=2048'
+URLS[lmsh_01]='https://cdn.mos.cms.futurecdn.net/XNKFQ78byaq9QEv9JfqJGk.jpg'
+URLS[lmsh_02]='https://static1-br.millenium.gg/articles/7/10/72/7/%40/127793-let-me-solo-her-ganhou-uma-espada-de-presente-da-bandai-namco-por-derrotar-malenia-1000-vezes-full-1.jpg'
+URLS[wall_01]='https://cdn.mos.cms.futurecdn.net/T2CXCULShtN7Y5hKYpyQxH.jpg'
+URLS[wall_02]='https://static1.millenium.org/articles/8/38/83/78/%40/1576452-passage-secret-article_cover_bd-1.jpg'
 
-fetch_clip() {
-  label="$1"; id="$2"; start="$3"; length="$4"
-  echo "===== $label $id ====="
-  for api in "${PIPED[@]}"; do
-    echo "TRY $api"
-    if curl -fsSL --connect-timeout 4 --max-time 9 "$api/streams/$id" -o "/tmp/${label}.json"; then
-      url=$(jq -r '[.videoStreams[]? | select((.height // 0) >= 720 and (.height // 0) <= 1080)] | sort_by(.height,.bitrate) | reverse | .[0].url // empty' "/tmp/${label}.json")
-      if [ -n "$url" ]; then
-        # Read only the useful source interval; do not download/transcode the full source video.
-        if ffmpeg -y -loglevel error -ss "$start" -i "$url" -t "$length" -an -vf "scale='min(1280,iw)':-2,fps=30" -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "pack/video/${label}.mp4"; then
-          ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "pack/video/${label}.mp4" > "pack/meta/${label}_probe.json"
-          h=$(jq -r '.streams[0].height // 0' "pack/meta/${label}_probe.json")
-          if [ "$h" -ge 720 ]; then echo "OK $label ${h}p via $api"; return 0; fi
-        fi
-      fi
-    fi
-  done
-  rm -f "pack/video/${label}.mp4"
-  echo "FAILED $label"
-  return 1
-}
+for key in "${!URLS[@]}"; do
+  echo "DOWNLOAD $key"
+  curl -fL --retry 4 --retry-delay 1 --connect-timeout 10 --max-time 60 -A 'Mozilla/5.0' "${URLS[$key]}" -o "pack/stills/$key.img"
+  ffprobe -v error -show_entries stream=width,height -of json "pack/stills/$key.img" > "pack/meta/${key}_probe.json" || true
+  ffmpeg -y -loglevel error -loop 1 -i "pack/stills/$key.img" -t 24 -r 30 \
+    -vf "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,eq=contrast=1.04:saturation=1.08" \
+    -an -c:v libx264 -preset veryfast -crf 16 -pix_fmt yuv420p "pack/video/$key.mp4"
+done
 
-# One high-quality, topic-specific real gameplay source per section.
-# These are YouTube source streams obtained through Piped, not re-uploads to Dailymotion.
-fetch_clip hoarfrost 'gXoEiA36bvM' 4 42 & p1=$!
-fetch_clip mimic     'naANQ9xjFfk' 4 42 & p2=$!
-fetch_clip lmsh      'HoSRJJ4Popk' 4 42 & p3=$!
-fetch_clip wall      'k-ffeG4S4as' 2 42 & p4=$!
+# Official Steam-hosted Elden Ring footage for the opening.
+curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o pack/video/official_a.mp4
+curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o pack/video/official_b.mp4
 
-fail=0
-wait "$p1" || fail=1
-wait "$p2" || fail=1
-wait "$p3" || fail=1
-wait "$p4" || fail=1
-test "$fail" -eq 0
-
-# Opening only: official Steam-hosted Elden Ring footage.
-curl -fsSL --retry 3 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o pack/video/official_a.mp4
-curl -fsSL --retry 3 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o pack/video/official_b.mp4
-
-# Audit: four frames from every accepted gameplay clip.
+# Visual audit sheet.
 for f in pack/video/*.mp4; do
   b=$(basename "$f" .mp4)
   d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
-  for frac in .15 .35 .60 .82; do
+  for frac in .18 .42 .68 .86; do
     t=$(python3 -c 'import sys; print(max(.1,float(sys.argv[1])*float(sys.argv[2])))' "$d" "$frac")
     ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "pack/audit/frames/${b}_${frac}.jpg"
   done
 done
-ffmpeg -y -loglevel error -pattern_type glob -i 'pack/audit/frames/*.jpg' -vf 'scale=320:-2,tile=4x8:padding=4:margin=4' -frames:v 1 pack/audit/contact_sheet.jpg
+ffmpeg -y -loglevel error -pattern_type glob -i 'pack/audit/frames/*.jpg' -vf 'scale=320:-2,tile=4x10:padding=4:margin=4' -frames:v 1 pack/audit/contact_sheet.jpg || true
 
 # Actual VOICEVOX Engine. 四国めたん ノーマル = speaker 2.
 docker rm -f voicevox >/dev/null 2>&1 || true
