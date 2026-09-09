@@ -2,123 +2,77 @@
 set -euo pipefail
 mkdir -p pack/video pack/audio pack/audit/frames pack/meta render
 
+# Current public Piped API instances from TeamPiped's maintained instance list.
 PIPED=(
   'https://pipedapi.kavin.rocks'
-  'https://pipedapi.syncpundit.io'
-  'https://api-piped.mha.fi'
-  'https://piped-api.garudalinux.org'
-)
-INVIDIOUS=(
-  'https://inv.nadeko.net'
-  'https://invidious.nerdvpn.de'
-  'https://yt.chocolatemoo53.com'
-  'https://invidious.tiekoetter.com'
+  'https://pipedapi.leptons.xyz'
+  'https://pipedapi.nosebs.ru'
+  'https://pipedapi-libre.kavin.rocks'
+  'https://pipedapi.adminforge.de'
+  'https://api.piped.yt'
+  'https://pipedapi.drgns.space'
+  'https://piped-api.codespace.cz'
+  'https://api.piped.private.coffee'
 )
 
-proxy_fetch() {
-  label="$1"; id="$2"
+fetch_clip() {
+  label="$1"; id="$2"; start="$3"; length="$4"
   echo "===== $label $id ====="
-  rm -f "pack/video/${label}_src"* "pack/video/${label}.mp4" 2>/dev/null || true
-
-  # Piped gives proxied YouTube source streams. Select 720p-1080p video-only stream.
-  for base in "${PIPED[@]}"; do
-    api="$base/streams/$id"
-    echo "PIPED $api"
-    if curl -fsSL --connect-timeout 8 --max-time 35 "$api" -o /tmp/streams.json; then
-      url=$(jq -r '[.videoStreams[]? | select((.height // 0) >= 720 and (.height // 0) <= 1080)] | sort_by(.height,.bitrate) | reverse | .[0].url // empty' /tmp/streams.json)
-      height=$(jq -r '[.videoStreams[]? | select((.height // 0) >= 720 and (.height // 0) <= 1080)] | sort_by(.height,.bitrate) | reverse | .[0].height // 0' /tmp/streams.json)
+  for api in "${PIPED[@]}"; do
+    echo "TRY $api"
+    if curl -fsSL --connect-timeout 4 --max-time 9 "$api/streams/$id" -o "/tmp/${label}.json"; then
+      url=$(jq -r '[.videoStreams[]? | select((.height // 0) >= 720 and (.height // 0) <= 1080)] | sort_by(.height,.bitrate) | reverse | .[0].url // empty' "/tmp/${label}.json")
       if [ -n "$url" ]; then
-        echo "Piped chose ${height}p"
-        if curl -fL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 300 "$url" -o "pack/video/${label}_src.bin"; then
-          if ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "pack/video/${label}_src.bin" > "pack/meta/${label}_probe.json"; then
-            realh=$(jq -r '.streams[0].height // 0' "pack/meta/${label}_probe.json")
-            if [ "$realh" -ge 720 ]; then
-              ffmpeg -y -loglevel error -i "pack/video/${label}_src.bin" -an -vf "scale='min(1920,iw)':-2,fps=30" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "pack/video/${label}.mp4"
-              rm -f "pack/video/${label}_src.bin"
-              echo "OK $label from Piped ${realh}p"
-              return 0
-            fi
-          fi
+        # Read only the useful source interval; do not download/transcode the full source video.
+        if ffmpeg -y -loglevel error -ss "$start" -i "$url" -t "$length" -an -vf "scale='min(1280,iw)':-2,fps=30" -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "pack/video/${label}.mp4"; then
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "pack/video/${label}.mp4" > "pack/meta/${label}_probe.json"
+          h=$(jq -r '.streams[0].height // 0' "pack/meta/${label}_probe.json")
+          if [ "$h" -ge 720 ]; then echo "OK $label ${h}p via $api"; return 0; fi
         fi
       fi
     fi
   done
-
-  # Invidious fallback: still the original YouTube adaptive stream, not a re-upload.
-  for base in "${INVIDIOUS[@]}"; do
-    api="$base/api/v1/videos/$id"
-    echo "INVIDIOUS $api"
-    if curl -fsSL --connect-timeout 8 --max-time 35 "$api" -o /tmp/video.json; then
-      url=$(jq -r '[.adaptiveFormats[]? | select((.height // 0) >= 720 and (.height // 0) <= 1080 and ((.type // "") | startswith("video/")))] | sort_by(.height,.bitrate) | reverse | .[0].url // empty' /tmp/video.json)
-      height=$(jq -r '[.adaptiveFormats[]? | select((.height // 0) >= 720 and (.height // 0) <= 1080 and ((.type // "") | startswith("video/")))] | sort_by(.height,.bitrate) | reverse | .[0].height // 0' /tmp/video.json)
-      if [ -n "$url" ]; then
-        echo "Invidious chose ${height}p"
-        if curl -fL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 300 "$url" -o "pack/video/${label}_src.bin"; then
-          if ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "pack/video/${label}_src.bin" > "pack/meta/${label}_probe.json"; then
-            realh=$(jq -r '.streams[0].height // 0' "pack/meta/${label}_probe.json")
-            if [ "$realh" -ge 720 ]; then
-              ffmpeg -y -loglevel error -i "pack/video/${label}_src.bin" -an -vf "scale='min(1920,iw)':-2,fps=30" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p "pack/video/${label}.mp4"
-              rm -f "pack/video/${label}_src.bin"
-              echo "OK $label from Invidious ${realh}p"
-              return 0
-            fi
-          fi
-        fi
-      fi
-    fi
-  done
-  rm -f "pack/video/${label}_src.bin"
+  rm -f "pack/video/${label}.mp4"
   echo "FAILED $label"
   return 1
 }
 
-# Exact real gameplay YouTube IDs, not fan-made replacement art.
-proxy_fetch hoarfrost_a 'QmHaTKNbVZ4' || true
-proxy_fetch hoarfrost_b 'Ul7WYPGScjc' || true
-proxy_fetch hoarfrost_c 'HMXSuYYXUXE' || true
+# One high-quality, topic-specific real gameplay source per section.
+# These are YouTube source streams obtained through Piped, not re-uploads to Dailymotion.
+fetch_clip hoarfrost 'gXoEiA36bvM' 4 42 & p1=$!
+fetch_clip mimic     'naANQ9xjFfk' 4 42 & p2=$!
+fetch_clip lmsh      'HoSRJJ4Popk' 4 42 & p3=$!
+fetch_clip wall      'k-ffeG4S4as' 2 42 & p4=$!
 
-proxy_fetch mimic_a 'f6VB0oxVmXA' || true
-proxy_fetch mimic_b '1NPbxONMdxM' || true
-proxy_fetch mimic_c '0qKN2J-uoJI' || true
+fail=0
+wait "$p1" || fail=1
+wait "$p2" || fail=1
+wait "$p3" || fail=1
+wait "$p4" || fail=1
+test "$fail" -eq 0
 
-# Prefer non-age-restricted real gameplay mirrors of LMSH/Malenia.
-proxy_fetch lmsh_a '1cE-2nFhKpo' || true
-proxy_fetch lmsh_b 'QKUlaYOaAAM' || true
-proxy_fetch lmsh_c 'r8doNBHE7PQ' || true
+# Opening only: official Steam-hosted Elden Ring footage.
+curl -fsSL --retry 3 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o pack/video/official_a.mp4
+curl -fsSL --retry 3 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o pack/video/official_b.mp4
 
-proxy_fetch wall_a 'i-bAE7axvVE' || true
-proxy_fetch wall_b '4t52LiFq85I' || true
-proxy_fetch wall_c '1kyHFATAS3I' || true
-
-# Official high-quality Elden Ring footage only for opening transitions.
-curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/377844/2912096cfadf6d63b7a35b7e7bc4e488c91cb31e/1750649918/microtrailer.mp4' -o pack/video/official_a.mp4
-curl -fL --retry 4 'https://video.fastly.steamstatic.com/store_trailers/1245620/442816/aa7a26b8b7da66bf324ce24555fe0848d4650711/1750650397/microtrailer.mp4' -o pack/video/official_b.mp4
-
-# Quality guardrail: don't make the video unless each topic has real 720p+ footage.
-for p in hoarfrost mimic lmsh wall; do
-  n=$(find pack/video -maxdepth 1 -name "${p}_*.mp4" | wc -l)
-  echo "$p count=$n"
-  test "$n" -ge 1
- done
-
-# Visual audit sheet.
+# Audit: four frames from every accepted gameplay clip.
 for f in pack/video/*.mp4; do
   b=$(basename "$f" .mp4)
   d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
-  for frac in .12 .33 .55 .77; do
+  for frac in .15 .35 .60 .82; do
     t=$(python3 -c 'import sys; print(max(.1,float(sys.argv[1])*float(sys.argv[2])))' "$d" "$frac")
-    ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "pack/audit/frames/${b}_${frac}.jpg" || true
+    ffmpeg -y -loglevel error -ss "$t" -i "$f" -frames:v 1 -vf 'scale=320:-2' "pack/audit/frames/${b}_${frac}.jpg"
   done
 done
-ffmpeg -y -loglevel error -pattern_type glob -i 'pack/audit/frames/*.jpg' -vf 'scale=320:-2,tile=4x20:padding=4:margin=4' -frames:v 1 pack/audit/contact_sheet.jpg
+ffmpeg -y -loglevel error -pattern_type glob -i 'pack/audit/frames/*.jpg' -vf 'scale=320:-2,tile=4x8:padding=4:margin=4' -frames:v 1 pack/audit/contact_sheet.jpg
 
-# Actual VOICEVOX engine, Shikoku Metan Normal = speaker 2.
+# Actual VOICEVOX Engine. 四国めたん ノーマル = speaker 2.
 docker rm -f voicevox >/dev/null 2>&1 || true
 docker pull voicevox/voicevox_engine:cpu-latest
 docker run -d --name voicevox -p 127.0.0.1:50021:50021 voicevox/voicevox_engine:cpu-latest
-for i in $(seq 1 120); do curl -fsS http://127.0.0.1:50021/version >/dev/null && break || sleep 2; done
+for i in $(seq 1 90); do curl -fsS http://127.0.0.1:50021/version >/dev/null && break || sleep 2; done
 curl -fsS http://127.0.0.1:50021/speakers > pack/meta/voicevox_speakers.json
-jq '.[] | select(.name=="四国めたん")' pack/meta/voicevox_speakers.json
+jq -e '.[] | select(.name=="四国めたん") | .styles[] | select(.id==2)' pack/meta/voicevox_speakers.json >/dev/null
 
 python3 - <<'PY'
 import json, urllib.parse, urllib.request
